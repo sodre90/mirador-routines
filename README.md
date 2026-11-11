@@ -17,6 +17,9 @@ recent runs with how each ended.
     bun run test          # the schedule and the plugin's work
     bun run typecheck
 
+`e2e/routines-plugin.spec.ts` drives the tab in a real Mirador; it needs Mirador's own e2e helpers, so it runs from a
+Mirador checkout, as its header says.
+
 Try it in your own Mirador:
 
     ln -s "$PWD" ~/.mirador/plugins/routines

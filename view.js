@@ -66,10 +66,10 @@ function preview(form) {
 function editorForm(routine) {
   const preset = PRESETS.find((each) => each.kind === routine.schedule.kind) ?? PRESETS[0];
   const form = el("div", { class: "editor" });
-  const name = el("input", { name: "name", value: routine.name, placeholder: "Check the e2e results", aria-label: "Name" });
+  const name = el("input", { name: "name", value: routine.name, placeholder: "Check the e2e results", "aria-label": "Name" });
   const profile = el(
     "select",
-    { name: "profile", aria-label: "Profile" },
+    { name: "profile", "aria-label": "Profile" },
     ...state.profiles.map((each) => el("option", { value: each.name, selected: each.name === routine.profile }, `${each.name} · ${each.agent}`)),
   );
   const what = el("textarea", { name: "what", placeholder: "What the agent should do", rows: 3 });
@@ -79,12 +79,12 @@ function editorForm(routine) {
 
   const choosePreset = el(
     "select",
-    { name: "preset", aria-label: "How often" },
+    { name: "preset", "aria-label": "How often" },
     ...PRESETS.map((each) => el("option", { value: each.kind, selected: each.kind === preset.kind }, each.label)),
   );
-  const time = el("input", { type: "time", name: "time", value: routine.schedule.time ?? "09:00", aria-label: "At" });
-  const every = el("input", { type: "number", name: "every", min: 1, max: 24, value: routine.schedule.every ?? 6, aria-label: "Every how many hours" });
-  const cron = el("input", { type: "text", name: "cron", value: routine.schedule.cron ?? "30 7 * * 1-5", spellcheck: false, aria-label: "Cron line" });
+  const time = el("input", { type: "time", name: "time", value: routine.schedule.time ?? "09:00", "aria-label": "At" });
+  const every = el("input", { type: "number", name: "every", min: 1, max: 24, value: routine.schedule.every ?? 6, "aria-label": "Every how many hours" });
+  const cron = el("input", { type: "text", name: "cron", value: routine.schedule.cron ?? "30 7 * * 1-5", spellcheck: false, "aria-label": "Cron line" });
   const dayBoxes = DAYS.map(
     (label, day) =>
       el("label", { class: "day" }, el("input", { type: "checkbox", name: "day", value: day, checked: (routine.schedule.days ?? []).includes(day) }), label),
@@ -115,12 +115,11 @@ function editorForm(routine) {
 }
 
 function routineRow(routine) {
-  const when = el("p", { class: "when-words" }, routine.problem ? `${routine.words} — ${routine.problem}` : `${routine.words} · next ${routine.nextRun ?? "never"}`);
-  when.classList.add(routine.problem ? "failed" : "");
+  const when = el("p", { class: routine.problem ? "when-words failed" : "when-words" }, routine.problem ? `${routine.words} — ${routine.problem}` : `${routine.words} · next ${routine.nextRun ?? "never"}`);
   return el(
     "li",
     { class: routine.on ? "" : "off" },
-    el("button", { class: "switch", onclick: () => send({ kind: "toggle", id: routine.id }), aria-label: routine.on ? "Switch off" : "Switch on", title: routine.on ? "Switch off" : "Switch on" }, routine.on ? "on" : "off"),
+    el("button", { class: "switch", onclick: () => send({ kind: "toggle", id: routine.id }), "aria-label": routine.on ? "Switch off" : "Switch on", title: routine.on ? "Switch off" : "Switch on" }, routine.on ? "on" : "off"),
     el("div", { class: "about" }, el("h3", { text: routine.name || "Untitled routine" }), when, el("p", { class: "profile", text: `${routine.profile} · ${routine.what.split("\n")[0]}` })),
     el(
       "div",

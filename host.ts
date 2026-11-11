@@ -5,7 +5,7 @@ import type {
   StartedConversation,
   WorkspaceTabContext,
 } from "./mirador/api.ts";
-import { UnusableSchedule, clockWords, describeSchedule, dueSlot, nextSlot, runTitle, type Schedule } from "./schedule.ts";
+import { MONTHS_ABBREVIATED, UnusableSchedule, clockWords, describeSchedule, dueSlot, nextSlot, runTitle, type Schedule } from "./schedule.ts";
 
 /** A job a workspace runs on its own: what to do, what should come of it, and when. */
 export interface Routine {
@@ -55,7 +55,7 @@ const saveRuns = (context: WorkspaceTabContext, runs: Run[]) => context.storage.
 export const promptFor = (routine: Routine) =>
   `${routine.what}\n\n---\nThis is a scheduled run of the routine "${routine.name}". End with ${routine.outcome.trim() || "a short page saying what you found"}.`;
 
-const slotWords = (slot: Date | null) => (slot === null ? null : `${slot.getDate()} ${slot.getMonth() + 1} · ${clockWords(slot)}`);
+const slotWords = (slot: Date | null) => (slot === null ? null : `${slot.getDate()} ${MONTHS_ABBREVIATED[slot.getMonth()]} · ${clockWords(slot)}`);
 
 /** A routine whose schedule can't be read says so, and holds nothing else up. */
 function showRoutine(routine: Routine): ShownRoutine {
