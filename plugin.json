@@ -1,0 +1,9 @@
+{
+  "name": "routines",
+  "title": "Routines",
+  "icon": "icon.svg",
+  "version": "0.1.0",
+  "api": 11,
+  "startsConversations": true,
+  "canvas": { "host": "host.ts", "view": "view.js" }
+}
