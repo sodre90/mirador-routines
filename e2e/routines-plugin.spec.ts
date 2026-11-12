@@ -62,6 +62,29 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await tabView(page).getByRole("button", { name: "Save routine" }).click();
     await expect(tabView(page).locator(".routine-list li")).toHaveCount(1);
     await expect(tabView(page).locator(".when-words")).toContainText("Every day at 07:30");
+    const looseText = await tabView(page).locator("main").evaluate((main) => [...main.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent));
+    expect(looseText, "the closed editor leaves nothing behind, not the word null").toEqual([]);
+  });
+
+  await test.step("Edit opens the routine as it was saved, with only its chosen days ticked", async () => {
+    const tab = tabView(page);
+    await tab.getByRole("button", { name: "Edit" }).click();
+    await expect(tab.locator('[name="preset"]')).toHaveValue("daily");
+    await expect(tab.locator('[name="time"]')).toHaveValue("07:30");
+    await tab.locator('[name="preset"]').selectOption("days");
+    await expect(tab.locator('[name="day"]:checked'), "a routine with no chosen days starts with none ticked").toHaveCount(0);
+    for (const day of ["Mon", "Thu"]) await tab.locator(".day", { hasText: day }).locator("input").check();
+    await expect(tab.locator(".preview")).toContainText("Mon, Thu at 07:30 · next");
+    await tab.getByRole("button", { name: "Save routine" }).click();
+    await expect(tab.locator(".when-words")).toContainText("Mon, Thu at 07:30");
+
+    await tab.getByRole("button", { name: "Edit" }).click();
+    await expect(tab.locator('[name="preset"]')).toHaveValue("days");
+    await expect(tab.locator('[name="day"]:checked')).toHaveCount(2);
+    await expect(tab.locator(".day", { hasText: "Mon" }).locator("input")).toBeChecked();
+    await expect(tab.locator(".day", { hasText: "Thu" }).locator("input")).toBeChecked();
+    await tab.getByRole("button", { name: "Cancel" }).click();
+    await expect(tab.locator(".editor")).toHaveCount(0);
   });
 
   await test.step("Run now starts a conversation on the profile, which the tab lists as a run", async () => {

@@ -23,6 +23,7 @@ let editing = null;
 const el = (tag, attributes = {}, ...children) => {
   const node = document.createElement(tag);
   for (const [name, value] of Object.entries(attributes)) {
+    if (value === false || value == null) continue;
     if (name === "class") node.className = value;
     else if (name.startsWith("on")) node.addEventListener(name.slice(2), value);
     else if (name === "text") node.textContent = value;
@@ -142,14 +143,15 @@ function draw() {
   const list = el("ul", { class: "routine-list" }, ...routines.map(routineRow));
   const add = el("button", { class: "primary add", onclick: () => send({ kind: "new" }).then((blank) => ((editing = blank), draw())) }, "New routine");
   const runs = el("ul", { class: "run-list" }, ...state.runs.map(runRow));
-  page.append(
+  const sections = [
     el("header", {}, el("h1", { text: "Routines" }), el("p", { class: "notice" })),
     routines.length === 0 ? el("p", { class: "empty" }, "Nothing runs here yet. A routine is a prompt, what should come of it, a profile to run on and a time to run at.") : list,
     add,
     editing ? editorForm(editing) : null,
     el("h2", { text: "Recent runs" }),
     state.runs.length === 0 ? el("p", { class: "empty", text: "No runs yet." }) : runs,
-  );
+  ];
+  page.append(...sections.filter(Boolean));
 }
 
 window.mirador.onState((shown) => {
