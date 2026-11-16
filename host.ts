@@ -191,17 +191,15 @@ export async function checkAll(context: PluginBackgroundContext, now = new Date(
   const started: Run[] = [];
   for (const { id } of context.workspaces()) {
     const workspace = context.inWorkspace(id);
-    const fired = firedIn(workspace);
     let changedHere = false;
     for (const routine of routinesIn(workspace)) {
       if (!routine.on) continue;
-      const slot = dueSlotFor(routine, fired[routine.id] ?? null, now);
+      const slot = dueSlotFor(routine, firedIn(workspace)[routine.id] ?? null, now);
       if (!slot) {
         if (dropPassedSkip(workspace, routine, now)) changedHere = true;
         continue;
       }
-      fired[routine.id] = slot.getTime();
-      workspace.storage.set("fired", fired);
+      workspace.storage.set("fired", { ...firedIn(workspace), [routine.id]: slot.getTime() });
       changedHere = true;
       if (skipsSlot(workspace, routine, slot)) continue;
       const run = await startRun(workspace, routine, slot);

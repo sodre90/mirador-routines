@@ -328,6 +328,22 @@ describe("a routine that starts over", () => {
     expect((await checkAll(context, at(13, 10))).map((run) => run.title)).toEqual(["Check e2e results · 13 Nov"]);
   });
 
+  test("switched on while another routine's conversation is starting, it still starts from now", async () => {
+    const { context, tabContext, workspaces } = fakeContext([
+      { id: "w1", name: "shop", routines: [routine({ id: "r1" }), routine({ id: "r2", name: "Off", on: false }), routine({ id: "r3", name: "Third" })], fired: { r2: at(9, 9).getTime() } },
+    ]);
+    const tab = tabContext("w1");
+    const starting = tab.startConversation;
+    tab.startConversation = async (start) => {
+      if (workspaces[0]!.started.length === 0) await host.workspaceTab!.action!({ kind: "toggle", id: "r2" }, tab as never);
+      return starting(start);
+    };
+    setSystemTime(at(12, 9));
+    expect((await checkAll(context, at(12, 9))).map((run) => run.routineName)).toEqual(["Check e2e results", "Third"]);
+    expect((workspaces[0]!.kept["fired"] as Record<string, number>)["r2"]).toBe(at(12, 9).getTime());
+    expect(await checkAll(context, at(12, 9, 1))).toEqual([]);
+  });
+
   test("edited in any other way, it keeps its place: a slot due now still runs", async () => {
     const { context, tabContext } = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })], fired: { r1: at(11, 9).getTime() } }]);
     setSystemTime(at(12, 9));
