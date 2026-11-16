@@ -298,6 +298,36 @@ describe("skipping a routine's next run", () => {
   });
 });
 
+describe("a routine that starts over", () => {
+  afterEach(() => setSystemTime());
+
+  test("switched back on, it starts from now: the slots that passed while it was off don't run", async () => {
+    const { context, tabContext } = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })], fired: { r1: at(12, 9).getTime() } }]);
+    setSystemTime(at(12, 10));
+    await host.workspaceTab!.action!({ kind: "toggle", id: "r1" }, tabContext("w1") as never);
+    setSystemTime(at(16, 10));
+    await host.workspaceTab!.action!({ kind: "toggle", id: "r1" }, tabContext("w1") as never);
+    expect(await checkAll(context, at(16, 10))).toEqual([]);
+    expect((await checkAll(context, at(17, 9))).map((run) => run.title)).toEqual(["Check e2e results · 17 Nov"]);
+  });
+
+  test("given a new schedule, it starts from now: today's slot of it that already passed doesn't run at once", async () => {
+    const daily = (time: string) => routine({ id: "r1", schedule: { kind: "daily", time } });
+    const { context, tabContext } = fakeContext([{ id: "w1", name: "shop", routines: [daily("09:00")], fired: { r1: at(12, 9).getTime() } }]);
+    setSystemTime(at(12, 11));
+    await host.workspaceTab!.action!({ kind: "save", routine: daily("10:00") }, tabContext("w1") as never);
+    expect(await checkAll(context, at(12, 11))).toEqual([]);
+    expect((await checkAll(context, at(13, 10))).map((run) => run.title)).toEqual(["Check e2e results · 13 Nov"]);
+  });
+
+  test("edited in any other way, it keeps its place: a slot due now still runs", async () => {
+    const { context, tabContext } = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })], fired: { r1: at(11, 9).getTime() } }]);
+    setSystemTime(at(12, 9));
+    await host.workspaceTab!.action!({ kind: "save", routine: routine({ id: "r1", name: "Renamed" }) }, tabContext("w1") as never);
+    expect((await checkAll(context, at(12, 9))).map((run) => run.title)).toEqual(["Renamed · 12 Nov"]);
+  });
+});
+
 describe("a run's conversation ending", () => {
   const event = (conversationId: string, ended: "finished" | "failed" | "stopped"): PluginActivityEvent => ({
     kind: "turn-ended",

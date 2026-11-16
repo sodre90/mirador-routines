@@ -141,6 +141,13 @@ function skipsSlot(workspace: WorkspaceTabContext, routine: Routine, slot: Date)
   return skipped === slot.getTime();
 }
 
+/** Marks the slots that passed as run, so a routine switched on or given a new schedule starts from now, not with a catch-up. */
+function startFromNow(context: WorkspaceTabContext, routine: Routine) {
+  const fired = firedIn(context);
+  const passed = dueSlotFor(routine, fired[routine.id] ?? null, new Date());
+  if (passed !== null) context.storage.set("fired", { ...fired, [routine.id]: passed.getTime() });
+}
+
 /** Drops a skip whose slot passed without coming due, as a routine's first slot does when the Mac slept through it. */
 function dropPassedSkip(workspace: WorkspaceTabContext, routine: Routine, now: Date): boolean {
   const skipped = skipsIn(workspace)[routine.id];
@@ -280,23 +287,29 @@ const tabAction = {
       case "describe":
         return showRoutine({ ...blankRoutine(), schedule: asked.schedule });
       case "save": {
+        const routine = asked.routine;
         const routines = routinesIn(context);
-        const index = routines.findIndex((each) => each.id === asked.routine.id);
-        if (index !== -1 && !sameSchedule(routines[index]!.schedule, asked.routine.schedule)) setSkip(context, asked.routine.id, null);
-        saveRoutines(context, index === -1 ? [asked.routine, ...routines] : routines.map((each, at) => (at === index ? asked.routine : each)));
+        const before = routines.find((each) => each.id === routine.id);
+        const rescheduled = before !== undefined && !sameSchedule(before.schedule, routine.schedule);
+        if (rescheduled) setSkip(context, routine.id, null);
+        if (routine.on && (rescheduled || before?.on === false)) startFromNow(context, routine);
+        saveRoutines(context, before ? routines.map((each) => (each.id === routine.id ? routine : each)) : [routine, ...routines]);
         context.changed();
-        return showRoutine(asked.routine, skipsIn(context)[asked.routine.id] ?? null);
+        return showRoutine(routine, skipsIn(context)[routine.id] ?? null);
       }
       case "delete":
         saveRoutines(context, routinesIn(context).filter((each) => each.id !== asked.id));
         setSkip(context, asked.id, null);
         context.changed();
         return null;
-      case "toggle":
+      case "toggle": {
+        const switchedOn = routinesIn(context).find((each) => each.id === asked.id && !each.on);
+        if (switchedOn) startFromNow(context, { ...switchedOn, on: true });
         saveRoutines(context, routinesIn(context).map((each) => (each.id === asked.id ? { ...each, on: !each.on } : each)));
         setSkip(context, asked.id, null);
         context.changed();
         return null;
+      }
       case "skipNext": {
         const slot = slotToSkip(routineIn(context, asked.id), firedIn(context)[asked.id] ?? null, new Date());
         if (slot === null) return null;

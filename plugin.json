@@ -2,7 +2,7 @@
   "name": "routines",
   "title": "Routines",
   "icon": "icon.svg",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "api": 18,
   "startsConversations": true,
   "description": "Run a prompt in a workspace on a schedule you set: weekdays, every day, chosen days, every few hours, or a cron line. Each routine names a profile, what the agent should do and what you want to see when it ends. When one is due, Mirador starts a fresh conversation for it, which works on its own and then waits for you in the sidebar like any other. The workspace's Routines tab shows the week of runs, past and coming, counts down to each routine's next run, edits them, starts one now or skips its next run, and opens the conversation of any run.",

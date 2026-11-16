@@ -6,10 +6,11 @@ A [Mirador](https://github.com/sodre90/mirador) plugin that runs a prompt in a w
 
 Each routine is a name, a profile, what the agent should do, what you want to be able to see when it ends, and when it
 runs: weekdays, every day, chosen days at a time, every few hours, or a cron line. It runs on the profile's model and
-effort, or on ones of its own, chosen from those the profile's agent offers. When one is due, Mirador starts a
-fresh conversation for it in the workspace, which works on the message and then waits for you like any other: a *Done*
-mark in the sidebar, a notification, a place in the phone app. Slots missed while the Mac slept come back as one run, so
-a weekday routine set for 09:00 runs once on Monday morning, not five times.
+effort, or on ones of its own, chosen from those the profile's agent offers. When one is due, Mirador starts a fresh
+conversation for it in the workspace, which works on the message and then waits for you like any other: a *Done* mark
+in the sidebar, a notification, a place in the phone app. Slots missed while the Mac slept come back as one run, so a
+weekday routine set for 09:00 runs once on Monday morning, not five times. A routine switched back on, or given a new
+schedule, starts from then: the slots that passed meanwhile don't run.
 
 The workspace's **Routines** tab opens on the week: a row for each routine, with the runs of the last two days as dots
 coloured by how they ended and the coming runs as rings, against a line that marks now. Below it are the routines, each
