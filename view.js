@@ -543,14 +543,14 @@ function editorFor(routine) {
     ),
   );
   showDetail();
-  const node = el("li", { class: "editing", "data-id": routine.id }, form);
-  requestAnimationFrame(() => (routine.name ? what : name).focus({ preventScroll: true }));
-  return node;
+  return el("li", { class: "editing", "data-id": routine.id }, form);
 }
 
+/** Focus goes in as the editor is placed, never a frame later, when it could pull the cursor out of a field already typed in. */
 function openEditor(routine) {
   editing = { id: routine.id, node: editorFor(routine) };
   draw();
+  editing.node.querySelector(routine.name ? '[name="what"]' : '[name="name"]').focus({ preventScroll: true });
   editing.node.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 

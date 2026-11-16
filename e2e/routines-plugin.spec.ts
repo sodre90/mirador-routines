@@ -66,6 +66,28 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await expect(tabView(page).locator(".editor")).toHaveCount(0);
   });
 
+  await test.step("a new routine's editor starts in Name, and never pulls the cursor back there from a field typed in since", async () => {
+    const tab = tabView(page);
+    await tab.locator("body").evaluate(() => {
+      const held: FrameRequestCallback[] = [];
+      Object.assign(window, { heldFrames: held, paintedFrames: window.requestAnimationFrame });
+      window.requestAnimationFrame = (callback) => held.push(callback);
+    });
+    await tab.getByRole("button", { name: "New routine" }).click();
+    await expect(tab.locator('[name="name"]')).toBeFocused();
+    await tab.locator('[name="what"]').click();
+    await tab.locator("body").evaluate(() => {
+      const { heldFrames, paintedFrames } = window as unknown as { heldFrames: FrameRequestCallback[]; paintedFrames: typeof requestAnimationFrame };
+      window.requestAnimationFrame = paintedFrames;
+      for (const callback of heldFrames.splice(0)) callback(performance.now());
+    });
+    await page.keyboard.type("Read the newest e2e results.");
+    await expect(tab.locator('[name="what"]')).toHaveValue("Read the newest e2e results.");
+    await expect(tab.locator('[name="name"]')).toHaveValue("");
+    await tab.getByRole("button", { name: "Cancel" }).click();
+    await expect(tab.locator(".editor")).toHaveCount(0);
+  });
+
   await test.step("the editor previews the schedule and saves the routine", async () => {
     await tabView(page).getByRole("button", { name: "New routine" }).click();
     await tabView(page).locator('[name="name"]').fill("Check e2e results");
