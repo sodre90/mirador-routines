@@ -179,6 +179,12 @@ function runDot(run, at, moved) {
   });
 }
 
+function slotDot(routine, slot, x) {
+  const name = routine.name || "Untitled routine";
+  const [kind, words] = slot === routine.skipped ? ["skipped", "skipped,"] : slot === routine.nextRunAt ? ["next", "next run"] : ["", "runs"];
+  return el("span", { class: ["dot", "slot", kind].filter(Boolean).join(" "), style: `--x:${x}`, "data-hint": `${name} · ${words} ${dateWords(slot)}` });
+}
+
 function lane(routine, week, moved) {
   const ran = runsOf(routine).filter((run) => week.at(run.startedAt) >= 0);
   const coming = routine.on ? routine.upcoming.filter((slot) => week.at(slot) <= 1) : [];
@@ -192,9 +198,7 @@ function lane(routine, week, moved) {
       { class: "track" },
       routine.on ? null : el("span", { class: "off-note", text: "switched off" }),
       ...ran.map((run) => runDot(run, week.at, moved)),
-      ...coming.map((slot, index) =>
-        el("span", { class: index === 0 ? "dot slot next" : "dot slot", style: `--x:${week.at(slot)}`, "data-hint": `${name} · ${index === 0 ? "next run" : "runs"} ${dateWords(slot)}` }),
-      ),
+      ...coming.map((slot) => slotDot(routine, slot, week.at(slot))),
     ),
   );
 }
@@ -215,11 +219,13 @@ function drawWeek(now, moved) {
   week.style.setProperty("--now", String(shown.at(now)));
   week.classList.toggle("entering", !drawnBefore);
   week.replaceChildren(days, ...state.routines.map((routine) => lane(routine, shown, moved)), el("div", { class: "now", "aria-hidden": "true" }));
+  const anySkipped = state.routines.some((routine) => routine.on && routine.skipped !== null);
   legend.replaceChildren(
     el("span", {}, el("i", { class: "finished" }), "done"),
     el("span", {}, el("i", { class: "failed" }), "failed"),
     el("span", {}, el("i", { class: "running" }), "working"),
     el("span", {}, el("i", { class: "slot" }), "coming up"),
+    ...(anySkipped ? [el("span", {}, el("i", { class: "slot skipped" }), "skipped")] : []),
   );
 }
 
@@ -289,6 +295,31 @@ function runNowButton(routine) {
   return button;
 }
 
+const canSkip = (routine) => routine.on && !routine.problem && (routine.skipped !== null || routine.nextRunAt !== null);
+
+function skipButton(routine) {
+  const skipping = routine.skipped !== null;
+  const button = el(
+    "button",
+    {
+      class: skipping ? "btn skipping" : "btn",
+      type: "button",
+      "data-hint": skipping ? `Run it ${dateWords(routine.skipped)} after all` : `Don't run it ${dateWords(routine.nextRunAt)}`,
+      onclick: () => {
+        button.disabled = true;
+        send({ kind: skipping ? "dontSkip" : "skipNext", id: routine.id }).finally(() => (button.disabled = false));
+      },
+    },
+    skipping ? "Don't skip" : "Skip next",
+  );
+  return button;
+}
+
+const skippedNote = (routine) =>
+  routine.skipped === null
+    ? null
+    : [el("span", { class: "skipped-note", "data-hint": `Won't run ${dateWords(routine.skipped)}` }, el("s", { text: `${DAYS[new Date(routine.skipped).getDay()]} ${clock(routine.skipped)}` }), " skipped"), " · "];
+
 function card(routine, moved) {
   const history = runsOf(routine).slice(0, HISTORY_DOTS).reverse();
   const when = routine.problem
@@ -297,6 +328,7 @@ function card(routine, moved) {
         "p",
         { class: "when-words" },
         `${routine.words} · `,
+        routine.on ? skippedNote(routine) : null,
         !routine.on
           ? el("span", { class: "paused", text: "switched off" })
           : routine.nextRunAt === null
@@ -329,7 +361,7 @@ function card(routine, moved) {
         el("p", { class: "what", text: routine.what.split("\n")[0] }),
         history.length > 0 ? el("div", { class: "history", "aria-label": "Last runs" }, ...history.map((run) => runDot(run, null, moved))) : null,
       ),
-      el("div", { class: "row-buttons" }, runNowButton(routine), el("button", { class: "btn", type: "button", onclick: () => openEditor(routine) }, "Edit"), deleteButton(routine)),
+      el("div", { class: "row-buttons" }, runNowButton(routine), canSkip(routine) ? skipButton(routine) : null, el("button", { class: "btn", type: "button", onclick: () => openEditor(routine) }, "Edit"), deleteButton(routine)),
     ),
   );
 }
@@ -703,6 +735,8 @@ button.dot:hover { transform: scale(1.4); z-index: 1; }
 .dot.running { background: var(--accent); color: var(--accent); animation: ping 1.8s ease-out infinite; }
 .dot.slot { background: var(--bg); border: 1.5px solid var(--accent); }
 .dot.slot.next { background: var(--accent-soft); border-width: 3px; color: var(--accent); animation: ping 1.8s ease-out infinite; }
+.dot.slot.skipped { background: none; border: 1.5px dashed var(--faint); }
+.dot.slot.skipped::after { content: ""; position: absolute; left: -20%; right: -20%; top: 50%; height: 1.5px; margin-top: -.75px; background: var(--faint); transform: rotate(-45deg); }
 .lane.dense .dot { width: .38rem; height: .38rem; margin: -.19rem 0 0 -.19rem; }
 .lane.dense .dot.slot { border-width: 1px; }
 .week.entering .dot:not(.running):not(.next) { animation: pop .5s cubic-bezier(.2, .9, .3, 1.5) backwards; animation-delay: calc(var(--x) * 700ms); }
@@ -714,6 +748,7 @@ button.dot:hover { transform: scale(1.4); z-index: 1; }
 .legend i { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; margin-right: .35rem; vertical-align: -.03rem; }
 .legend .finished { background: var(--ok); } .legend .failed { background: var(--danger); } .legend .running { background: var(--accent); }
 .legend .slot { border: 1.5px solid var(--accent); }
+.legend .slot.skipped { border: 1.5px dashed var(--faint); }
 
 .routine-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; }
 .routine-list > li { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); transition: border-color .2s, box-shadow .2s; }
@@ -728,6 +763,8 @@ button.dot:hover { transform: scale(1.4); z-index: 1; }
 .when-words { margin: .15rem 0 0; }
 .when-words.failed { color: var(--danger); }
 .paused { color: var(--faint); }
+.skipped-note { color: var(--muted); }
+.skipped-note s { color: var(--faint); }
 .what { margin: .2rem 0 0; color: var(--muted); font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .history { display: flex; gap: .3rem; margin-top: .5rem; align-items: center; }
 .history .dot { position: static; margin: 0; width: .6rem; height: .6rem; }
@@ -747,7 +784,7 @@ button.dot:hover { transform: scale(1.4); z-index: 1; }
 .btn.go:hover { color: var(--accent-text); background: var(--accent); }
 .btn.danger:hover, .btn.danger.confirming { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); background: color-mix(in srgb, var(--danger) 10%, var(--panel)); }
 .row-buttons { display: flex; gap: .35rem; }
-.row-buttons .btn:not(.go) { opacity: .55; }
+.row-buttons .btn:not(.go):not(.skipping) { opacity: .55; }
 li:hover .row-buttons .btn, .row-buttons .btn:focus-visible, .row-buttons .btn.confirming { opacity: 1; }
 .adding { margin-top: .7rem; }
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, setSystemTime } from "bun:test";
 import host, { checkAll, promptFor, watchWorkspaces, type Routine, type Run, type ShownRoutine } from "../host.ts";
 import type { PluginActivityEvent, PluginBackgroundContext, StartedConversation, WorkspaceConversationStart, WorkspaceTabContext } from "../mirador/api.ts";
 import { runTitle, type Schedule } from "../schedule.ts";
@@ -217,6 +217,83 @@ describe("the tab", () => {
     const broken = (await host.workspaceTab!.action!({ kind: "describe", schedule: { kind: "daily", time: "9am" } }, tabContext("w1") as never)) as ShownRoutine;
     expect(broken.problem).toContain("is not a time like 07:30");
     expect(broken).toMatchObject({ nextRunAt: null, upcoming: [] });
+  });
+});
+
+describe("skipping a routine's next run", () => {
+  let workspaces: ReturnType<typeof fakeContext>;
+  const act = (action: unknown) => host.workspaceTab!.action!(action, workspaces.tabContext("w1") as never);
+  const shown = () => (host.workspaceTab!.state!(workspaces.tabContext("w1") as never) as { routines: ShownRoutine[] }).routines[0]!;
+  const kept = () => workspaces.workspaces[0]!.kept;
+
+  beforeEach(() => {
+    workspaces = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })] }]);
+    setSystemTime(at(12, 8));
+  });
+  afterEach(() => setSystemTime());
+
+  test("starts nothing at the skipped slot, counts down to the one after, and runs that one", async () => {
+    expect(await act({ kind: "skipNext", id: "r1" })).toBe(at(12, 9).getTime());
+    expect(shown()).toMatchObject({ skipped: at(12, 9).getTime(), nextRunAt: at(13, 9).getTime() });
+    expect(shown().upcoming[0], "the week still shows the skipped slot").toBe(at(12, 9).getTime());
+    const refreshesBefore = workspaces.workspaces[0]!.refreshes;
+    expect(await checkAll(workspaces.context, at(12, 9))).toEqual([]);
+    expect(workspaces.workspaces[0]!.started).toEqual([]);
+    expect(workspaces.workspaces[0]!.refreshes, "the tab hears the skip is used up").toBe(refreshesBefore + 1);
+    expect(kept()["skipped"]).toEqual({});
+    expect((await checkAll(workspaces.context, at(13, 9))).map((run) => run.title)).toEqual(["Check e2e results · 13 Nov"]);
+  });
+
+  test("Don't skip puts the run back", async () => {
+    await act({ kind: "skipNext", id: "r1" });
+    await act({ kind: "dontSkip", id: "r1" });
+    expect(shown()).toMatchObject({ skipped: null, nextRunAt: at(12, 9).getTime() });
+    expect((await checkAll(workspaces.context, at(12, 9))).map((run) => run.title)).toEqual(["Check e2e results · 12 Nov"]);
+  });
+
+  test("skips a slot that came due but hasn't started yet, rather than the one after it", async () => {
+    kept()["fired"] = { r1: at(11, 9).getTime() };
+    setSystemTime(new Date(at(12, 9).getTime() + 20_000));
+    expect(await act({ kind: "skipNext", id: "r1" })).toBe(at(12, 9).getTime());
+    expect(await checkAll(workspaces.context, new Date(at(12, 9).getTime() + 30_000))).toEqual([]);
+  });
+
+  test("a skip the Mac slept past is dropped, and the slot after it still runs once", async () => {
+    kept()["fired"] = { r1: at(11, 9).getTime() };
+    kept()["skipped"] = { r1: at(12, 9).getTime() };
+    const ran = [...(await checkAll(workspaces.context, at(13, 10))), ...(await checkAll(workspaces.context, at(13, 10, 1)))];
+    expect(ran.map((run) => run.title)).toEqual(["Check e2e results · 13 Nov"]);
+    expect(kept()["skipped"]).toEqual({});
+  });
+
+  test("a skip whose slot the Mac slept through, on a routine only ever run by hand, is dropped without a run", async () => {
+    await act({ kind: "runNow", id: "r1" });
+    await act({ kind: "skipNext", id: "r1" });
+    const refreshesBefore = workspaces.workspaces[0]!.refreshes;
+    expect(await checkAll(workspaces.context, at(13, 8))).toEqual([]);
+    expect(kept()["skipped"]).toEqual({});
+    expect(workspaces.workspaces[0]!.refreshes, "the tab stops showing the skip").toBe(refreshesBefore + 1);
+    expect(workspaces.workspaces[0]!.started, "only the run by hand").toHaveLength(1);
+  });
+
+  test("a new schedule, switching off or deleting drops the skip; any other edit keeps it", async () => {
+    await act({ kind: "skipNext", id: "r1" });
+    await act({ kind: "save", routine: routine({ id: "r1", name: "Renamed" }) });
+    expect(shown().skipped).toBe(at(12, 9).getTime());
+    await act({ kind: "save", routine: routine({ id: "r1", schedule: { kind: "daily", time: "10:00" } }) });
+    expect(shown()).toMatchObject({ skipped: null, nextRunAt: at(12, 10).getTime() });
+    await act({ kind: "skipNext", id: "r1" });
+    await act({ kind: "toggle", id: "r1" });
+    expect(kept()["skipped"]).toEqual({});
+    await act({ kind: "skipNext", id: "r1" });
+    await act({ kind: "delete", id: "r1" });
+    expect(kept()["skipped"]).toEqual({});
+  });
+
+  test("a routine whose schedule can't be read has nothing to skip", async () => {
+    await act({ kind: "save", routine: routine({ id: "r1", schedule: { kind: "daily", time: "9am" } }) });
+    expect(await act({ kind: "skipNext", id: "r1" })).toBeNull();
+    expect(kept()["skipped"]).not.toHaveProperty("r1");
   });
 });
 

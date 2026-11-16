@@ -116,6 +116,26 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await expect(tabView(page).locator(".routine-list li .history .dot")).toHaveCount(1);
   });
 
+  await test.step("after a run by hand, Skip next steps over the coming run, and Don't skip puts it back", async () => {
+    const card = tabView(page).locator(".routine-list li");
+    const lane = tabView(page).locator(".week .lane", { hasText: "Check e2e results" });
+    const countdown = card.locator(".when-words .countdown");
+    const comingRun = await countdown.getAttribute("data-until");
+    await card.getByRole("button", { name: "Skip next" }).click();
+    await expect(card.locator(".skipped-note")).toHaveText(/^(Mon|Thu) 07:30 skipped$/);
+    await expect(countdown, "the countdown moves on to the run after").not.toHaveAttribute("data-until", comingRun!);
+    await expect(lane.locator(".dot.slot.skipped")).toHaveCount(1);
+    await expect(tabView(page).locator(".legend")).toHaveText("donefailedworkingcoming upskipped");
+    await expect(tabView(page).locator(".pill.next")).toContainText("Next · Check e2e results in");
+
+    await card.getByRole("button", { name: "Don't skip" }).click();
+    await expect(card.locator(".skipped-note")).toHaveCount(0);
+    await expect(countdown).toHaveAttribute("data-until", comingRun!);
+    await expect(lane.locator(".dot.slot.skipped")).toHaveCount(0);
+    await expect(tabView(page).locator(".legend")).toHaveText("donefailedworkingcoming up");
+    await expect(card.getByRole("button", { name: "Skip next" })).toBeVisible();
+  });
+
   await test.step("the editor offers the models and efforts the profile's agent lists, and a run starts on the ones chosen", async () => {
     const tab = tabView(page);
     await tab.getByRole("button", { name: "Edit" }).click();

@@ -52,6 +52,8 @@ export interface ShownRoutine extends Routine {
   nextRunAt: number | null;
   /** Its slots in the coming week, at most UPCOMING_SHOWN of them, as milliseconds since the epoch. */
   upcoming: number[];
+  /** The slot the user chose not to run, as milliseconds since the epoch; `nextRunAt` is the one after it. */
+  skipped: number | null;
   problem: string | null;
 }
 
@@ -65,9 +67,16 @@ const UPCOMING_SHOWN = 200;
 const routinesIn = (context: WorkspaceTabContext) => (context.storage.get("routines") ?? []) as Routine[];
 const runsIn = (context: WorkspaceTabContext) => (context.storage.get("runs") ?? []) as Run[];
 const firedIn = (context: WorkspaceTabContext) => (context.storage.get("fired") ?? {}) as Record<string, number>;
+/** Each routine's slot that won't run, kept apart from the routine so the editor's Save leaves it be. */
+const skipsIn = (context: WorkspaceTabContext) => (context.storage.get("skipped") ?? {}) as Record<string, number>;
 
 const saveRoutines = (context: WorkspaceTabContext, routines: Routine[]) => context.storage.set("routines", routines);
 const saveRuns = (context: WorkspaceTabContext, runs: Run[]) => context.storage.set("runs", runs.slice(-RUNS_KEPT));
+
+function setSkip(context: WorkspaceTabContext, routineId: string, slot: number | null) {
+  const { [routineId]: _, ...others } = skipsIn(context);
+  context.storage.set("skipped", slot === null ? others : { ...others, [routineId]: slot });
+}
 
 /** The message the run's conversation starts on: the work, and what should come of it. */
 export const promptFor = (routine: Routine) =>
@@ -75,16 +84,30 @@ export const promptFor = (routine: Routine) =>
 
 const slotWords = (slot: Date | null) => (slot === null ? null : `${slot.getDate()} ${MONTHS_ABBREVIATED[slot.getMonth()]} · ${clockWords(slot)}`);
 
+/** The first slot after `after` that will run, stepping over the skipped one. */
+function nextRunAfter(schedule: Schedule, after: Date, skipped: number | null): Date | null {
+  const next = nextSlot(schedule, after);
+  return next !== null && next.getTime() === skipped ? nextSlot(schedule, next) : next;
+}
+
 /** A routine whose schedule can't be read says so, and holds nothing else up. */
-function showRoutine(routine: Routine): ShownRoutine {
+function showRoutine(routine: Routine, skipped: number | null = null): ShownRoutine {
   const words = describeSchedule(routine.schedule);
   const now = new Date();
   try {
     const upcoming = slotsBetween(routine.schedule, now, new Date(now.getTime() + WEEK_MS), UPCOMING_SHOWN);
-    const next = upcoming[0] ?? nextSlot(routine.schedule, now);
-    return { ...routine, words, nextRun: slotWords(next), nextRunAt: next?.getTime() ?? null, upcoming: upcoming.map((slot) => slot.getTime()), problem: null };
+    const next = upcoming.find((slot) => slot.getTime() !== skipped) ?? nextRunAfter(routine.schedule, now, skipped);
+    return {
+      ...routine,
+      words,
+      nextRun: slotWords(next),
+      nextRunAt: next?.getTime() ?? null,
+      upcoming: upcoming.map((slot) => slot.getTime()),
+      skipped,
+      problem: null,
+    };
   } catch (error) {
-    return { ...routine, words, nextRun: null, nextRunAt: null, upcoming: [], problem: error instanceof Error ? error.message : String(error) };
+    return { ...routine, words, nextRun: null, nextRunAt: null, upcoming: [], skipped: null, problem: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -96,6 +119,34 @@ function dueSlotFor(routine: Routine, lastFired: number | null, now: Date): Date
     if (!(error instanceof UnusableSchedule)) console.error(`the routine "${routine.name}" has a schedule that can't be read:`, error);
     return null;
   }
+}
+
+/** The slot Skip next steps over: one that came due but hasn't started yet, else the next one. */
+function slotToSkip(routine: Routine, lastFired: number | null, now: Date): Date | null {
+  try {
+    return dueSlotFor(routine, lastFired, now) ?? nextSlot(routine.schedule, now);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the due slot is the one the user skipped. A skip whose slot has come, or that the Mac slept past, is used up
+ * either way.
+ */
+function skipsSlot(workspace: WorkspaceTabContext, routine: Routine, slot: Date): boolean {
+  const skipped = skipsIn(workspace)[routine.id];
+  if (skipped === undefined || skipped > slot.getTime()) return false;
+  setSkip(workspace, routine.id, null);
+  return skipped === slot.getTime();
+}
+
+/** Drops a skip whose slot passed without coming due, as a routine's first slot does when the Mac slept through it. */
+function dropPassedSkip(workspace: WorkspaceTabContext, routine: Routine, now: Date): boolean {
+  const skipped = skipsIn(workspace)[routine.id];
+  if (skipped === undefined || skipped > now.getTime()) return false;
+  setSkip(workspace, routine.id, null);
+  return true;
 }
 
 /**
@@ -134,19 +185,23 @@ export async function checkAll(context: PluginBackgroundContext, now = new Date(
   for (const { id } of context.workspaces()) {
     const workspace = context.inWorkspace(id);
     const fired = firedIn(workspace);
-    const dueHere: Run[] = [];
+    let changedHere = false;
     for (const routine of routinesIn(workspace)) {
       if (!routine.on) continue;
       const slot = dueSlotFor(routine, fired[routine.id] ?? null, now);
-      if (!slot) continue;
+      if (!slot) {
+        if (dropPassedSkip(workspace, routine, now)) changedHere = true;
+        continue;
+      }
       fired[routine.id] = slot.getTime();
       workspace.storage.set("fired", fired);
+      changedHere = true;
+      if (skipsSlot(workspace, routine, slot)) continue;
       const run = await startRun(workspace, routine, slot);
       saveRuns(workspace, [...runsIn(workspace), run]);
       started.push(run);
-      dueHere.push(run);
     }
-    if (dueHere.length > 0) workspace.changed();
+    if (changedHere) workspace.changed();
   }
   return started;
 }
@@ -179,7 +234,7 @@ export function watchWorkspaces(context: PluginBackgroundContext) {
 
 const tabState = (context: WorkspaceTabContext) => ({
   workspace: context.workspace.name,
-  routines: routinesIn(context).map(showRoutine),
+  routines: routinesIn(context).map((routine) => showRoutine(routine, skipsIn(context)[routine.id] ?? null)),
   runs: runsIn(context).slice().reverse(),
   profiles: context.profiles().map(({ name, agent, model, effort }) => ({ name, agent, model: model?.name ?? null, effort })),
 });
@@ -203,7 +258,17 @@ type TabAction =
   | { kind: "delete"; id: string }
   | { kind: "toggle"; id: string }
   | { kind: "runNow"; id: string }
+  | { kind: "skipNext"; id: string }
+  | { kind: "dontSkip"; id: string }
   | { kind: "choices"; profile: string };
+
+const sameSchedule = (one: Schedule, other: Schedule) => JSON.stringify(one) === JSON.stringify(other);
+
+function routineIn(context: WorkspaceTabContext, id: string): Routine {
+  const routine = routinesIn(context).find((each) => each.id === id);
+  if (!routine) throw new Error("That routine is not in this workspace any more.");
+  return routine;
+}
 
 const tabAction = {
   state: tabState,
@@ -217,21 +282,34 @@ const tabAction = {
       case "save": {
         const routines = routinesIn(context);
         const index = routines.findIndex((each) => each.id === asked.routine.id);
+        if (index !== -1 && !sameSchedule(routines[index]!.schedule, asked.routine.schedule)) setSkip(context, asked.routine.id, null);
         saveRoutines(context, index === -1 ? [asked.routine, ...routines] : routines.map((each, at) => (at === index ? asked.routine : each)));
         context.changed();
-        return showRoutine(asked.routine);
+        return showRoutine(asked.routine, skipsIn(context)[asked.routine.id] ?? null);
       }
       case "delete":
         saveRoutines(context, routinesIn(context).filter((each) => each.id !== asked.id));
+        setSkip(context, asked.id, null);
         context.changed();
         return null;
       case "toggle":
         saveRoutines(context, routinesIn(context).map((each) => (each.id === asked.id ? { ...each, on: !each.on } : each)));
+        setSkip(context, asked.id, null);
+        context.changed();
+        return null;
+      case "skipNext": {
+        const slot = slotToSkip(routineIn(context, asked.id), firedIn(context)[asked.id] ?? null, new Date());
+        if (slot === null) return null;
+        setSkip(context, asked.id, slot.getTime());
+        context.changed();
+        return slot.getTime();
+      }
+      case "dontSkip":
+        setSkip(context, asked.id, null);
         context.changed();
         return null;
       case "runNow": {
-        const routine = routinesIn(context).find((each) => each.id === asked.id);
-        if (!routine) throw new Error("That routine is not in this workspace any more.");
+        const routine = routineIn(context, asked.id);
         return startRun(context, routine, new Date()).then((run) => {
           saveRuns(context, [...runsIn(context), run]);
           context.changed();
@@ -247,7 +325,7 @@ const tabAction = {
 /**
  * Routines: jobs a workspace runs on its own. Each is a prompt, what should come of it, a profile to run on, with a
  * model and effort of its own if chosen, and a schedule. When one is due, Mirador starts a fresh conversation for it, which waits for you and notifies you as any
- * other conversation would. Slots missed while the Mac slept come back as one run.
+ * other conversation would, unless its next slot was skipped. Slots missed while the Mac slept come back as one run.
  */
 const host: CanvasHost = {
   items: {},

@@ -12,10 +12,11 @@ mark in the sidebar, a notification, a place in the phone app. Slots missed whil
 a weekday routine set for 09:00 runs once on Monday morning, not five times.
 
 The workspace's **Routines** tab opens on the week: a row for each routine, with the runs of the last two days as dots
-coloured by how they ended and the coming runs as rings, against a line that marks now. Below it are the routines,
-each counting down to its next run with its last runs beside it, ready to switch off, edit or start now, and the recent
-runs. Click a run, in the list or in the week, to open the conversation it started. An empty tab offers a few routines
-to start from.
+coloured by how they ended and the coming runs as rings, against a line that marks now. Below it are the routines, each
+counting down to its next run with its last runs beside it, ready to switch off, edit or start now, and the recent
+runs. **Skip next** steps over a routine's coming run, say after you started one by hand: the countdown moves on to the
+run after, and **Don't skip** puts it back. Click a run, in the list or in the week, to open the conversation it
+started. An empty tab offers a few routines to start from.
 
 ![The week of runs, past and coming, the routines counting down to their next run, and the recent runs](screenshots/routines-and-runs.png)
 
