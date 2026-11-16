@@ -104,10 +104,11 @@ describe("a routine that is due", () => {
   });
 
   test("a week missed while the Mac slept comes back as one run, on Monday", async () => {
-    await checkAll(workspaces.context, at(13, 9));
+    await checkAll(workspaces.context, at(6, 9));
     const runs = await checkAll(workspaces.context, at(16, 18));
     expect(runs).toHaveLength(1);
     expect(runs[0]!.slot).toBe(at(16, 9).getTime());
+    expect(await checkAll(workspaces.context, at(16, 18, 1)), "the slots in between don't follow one by one").toEqual([]);
   });
 
   test("a routine switched off runs nowhere, and one with a schedule that can't be read holds the others back nowhere", async () => {

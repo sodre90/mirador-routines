@@ -87,6 +87,12 @@ describe("a routine that missed its slots", () => {
     expect(dueSlot(weekdays, at(16, 9), monday)).toBeNull();
   });
 
+  test("a daily routine asleep over the weekend runs Monday's slot, not Saturday's and Sunday's first", () => {
+    const daily = { kind: "daily", time: "09:00" } as const;
+    expect(words(dueSlot(daily, at(13, 9), at(16, 18)))).toBe("16 9:0");
+    expect(words(dueSlot({ kind: "hours", every: 2 }, at(16, 2), at(16, 9, 30)))).toBe("16 8:0");
+  });
+
   test("runs its first slot as soon as it is due, without a past to compare with", () => {
     expect(words(dueSlot({ kind: "daily", time: "07:30" }, null, at(12, 7, 30)))).toBe("12 7:30");
     expect(dueSlot({ kind: "daily", time: "07:30" }, null, at(12, 7, 29))).toBeNull();

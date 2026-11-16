@@ -171,8 +171,9 @@ export function slotsBetween(schedule: Schedule, after: Date, until: Date, most:
  */
 export function dueSlot(schedule: Schedule, lastFired: Date | null, now: Date): Date | null {
   const since = lastFired ?? new Date(now.getTime() - MINUTE_MS);
-  const due = nextSlot(schedule, since);
-  return due !== null && due.getTime() <= now.getTime() ? due : null;
+  let newest: Date | null = null;
+  for (let slot = nextSlot(schedule, since, now); slot !== null; slot = nextSlot(schedule, slot, now)) newest = slot;
+  return newest;
 }
 
 const dayList = (days: number[]) => (days.length === 7 ? "every day" : [...days].sort((a, b) => a - b).map((day) => SHORT_DAY_NAMES[day]).join(", "));
