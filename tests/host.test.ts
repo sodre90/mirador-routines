@@ -192,6 +192,14 @@ describe("the tab", () => {
     expect(workspaces[0]!.kept["routines"]).toEqual([]);
   });
 
+  test("keeps a routine's own fields, not what the tab showed beside them when it was edited", async () => {
+    const { tabContext, workspaces } = fakeContext([{ id: "w1", name: "shop" }]);
+    const written = routine({ id: "r1", model: { id: "haiku", name: "Haiku 5.5" }, effort: null });
+    const asShown = { ...written, words: "Weekdays at 09:00", nextRun: "13 Nov · 09:00", nextRunAt: 1, upcoming: [1, 2], skipped: null, problem: null };
+    await host.workspaceTab!.action!({ kind: "save", routine: asShown }, tabContext("w1") as never);
+    expect(workspaces[0]!.kept["routines"]).toEqual([written]);
+  });
+
   test("runs a routine now, dated today whatever its slot is, and lists it among the runs", async () => {
     const { tabContext, workspaces } = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })] }]);
     const run = (await host.workspaceTab!.action!({ kind: "runNow", id: "r1" }, tabContext("w1") as never)) as Run;

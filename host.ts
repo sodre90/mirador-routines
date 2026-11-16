@@ -269,6 +269,9 @@ type TabAction =
   | { kind: "dontSkip"; id: string }
   | { kind: "choices"; profile: string };
 
+/** The routine as the editor sent it back, without what the tab showed beside it. */
+const ownFields = ({ id, name, profile, model, effort, what, outcome, schedule, on }: Routine): Routine => ({ id, name, profile, model, effort, what, outcome, schedule, on });
+
 const sameSchedule = (one: Schedule, other: Schedule) => JSON.stringify(one) === JSON.stringify(other);
 
 function routineIn(context: WorkspaceTabContext, id: string): Routine {
@@ -287,7 +290,7 @@ const tabAction = {
       case "describe":
         return showRoutine({ ...blankRoutine(), schedule: asked.schedule });
       case "save": {
-        const routine = asked.routine;
+        const routine = ownFields(asked.routine);
         const routines = routinesIn(context);
         const before = routines.find((each) => each.id === routine.id);
         const rescheduled = before !== undefined && !sameSchedule(before.schedule, routine.schedule);
