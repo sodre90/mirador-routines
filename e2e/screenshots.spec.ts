@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   mkdirSync(join(host.dataDir, "plugins"), { recursive: true });
   symlinkSync(PLUGIN, join(host.dataDir, "plugins", "routines"));
   const promptsFile = join(host.root, "prompts");
-  writeBunProgram(host.fakeProgramsDir, "opencode", join(import.meta.dirname, "fake-acp-agent.ts"), { FAKE_ACP_PROMPTS: promptsFile });
+  writeBunProgram(host.fakeProgramsDir, "opencode", join(import.meta.dirname, "fake-acp-agent.ts"), { FAKE_ACP_PROMPTS: promptsFile, FAKE_ACP_MODES: "1", FAKE_ACP_MODELS: "1" });
   writeFileSync(promptsFile, "");
   await host.start();
 });
@@ -34,6 +34,9 @@ test.afterAll(async () => {
 interface Routine {
   name: string;
   profile: string;
+  /** The models and efforts the fake agent offers, by id. */
+  model?: string;
+  effort?: string;
   what: string;
   outcome: string;
   when: { preset: "weekdays" | "daily" | "days"; time: string; days?: string[] };
@@ -50,6 +53,7 @@ const ROUTINES: Routine[] = [
   {
     name: "Nightly e2e check",
     profile: "qwen3-coder",
+    model: "haiku",
     what: "Run the e2e suite on main and read the failures.",
     outcome: "a page listing what failed and why, and an issue for each new failure.",
     when: { preset: "daily", time: "02:30" },
@@ -57,6 +61,8 @@ const ROUTINES: Routine[] = [
   {
     name: "Dependency updates",
     profile: "qwen3-coder",
+    model: "opus",
+    effort: "high",
     what: "Look for updates to the project's dependencies, take the safe ones on a branch and run the tests.",
     outcome: "a branch with the updates that pass, and a list of the ones that need me.",
     when: { preset: "days", time: "10:00", days: ["Mon", "Thu"] },
@@ -65,12 +71,15 @@ const ROUTINES: Routine[] = [
 
 const tabView = (page: Page) => page.frameLocator(".canvas-panel:visible .canvas-frame.workspace-tab iframe");
 
-async function fillEditor(tab: FrameLocator, { name, profile, what, outcome, when }: Routine) {
+async function fillEditor(tab: FrameLocator, { name, profile, model, effort, what, outcome, when }: Routine) {
   await tab.locator('[name="name"]').fill(name);
   await tab.locator('[name="profile"]').selectOption(profile);
+  await expect(tab.locator('[name="model"] option', { hasText: "Opus" }), "the agent has said what it offers").toHaveCount(1);
+  if (model) await tab.locator('[name="model"]').selectOption(model);
+  if (effort) await tab.locator('[name="effort"]').selectOption(effort);
   await tab.locator('[name="what"]').fill(what);
   await tab.locator('[name="outcome"]').fill(outcome);
-  await tab.locator('[name="preset"]').selectOption(when.preset);
+  await tab.locator(`[name="preset"][value="${when.preset}"]`).check();
   for (const day of when.days ?? []) await tab.locator(".day", { hasText: day }).locator("input").check();
   await tab.locator('[name="time"]').fill(when.time);
 }
@@ -87,11 +96,14 @@ async function takeScreenshot(page: Page, name: string, area: Locator, { from, d
   await page.screenshot({ path: join(screenshotsDirectory, `${name}.png`), clip: { x: box.x, y: top, width: box.width, height: bottom - top } });
 }
 
-/** Into an empty corner of the tab, which then drops the hover of the button clicked last, and its focus. */
+/**
+ * Onto the tab's heading, which drops the hover of the button clicked last (a pointer that leaves the frame keeps it in
+ * WebKit), and its focus; then long enough for a run that just came in to finish sliding into its place.
+ */
 async function moveTheMouseOffTheButtons(page: Page) {
-  const viewport = page.viewportSize()!;
-  await page.mouse.move(viewport.width - 2, viewport.height - 2);
+  await tabView(page).locator(".routines h1").hover();
   await tabView(page).locator("body").evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.waitForTimeout(1000);
 }
 
 /** The workspace sits in a temp folder, which a real one doesn't. */
@@ -136,7 +148,9 @@ test("screenshots of routines", async ({ page }) => {
 
   await tab.locator(".routine-list li", { hasText: "Dependency updates" }).getByRole("button", { name: "Edit" }).click();
   await expect(tab.locator(".preview")).toContainText("next");
-  const lastRoutine = tab.locator(".routine-list li").last();
-  await lastRoutine.evaluate((row) => row.scrollIntoView({ block: "start" }));
-  await takeScreenshot(page, "routine-editor", page.locator(".canvas-panel:visible"), { from: lastRoutine, downTo: tab.locator(".editor .buttons") });
+  await expect(tab.locator(".choices-note")).toHaveText("");
+  const editor = tab.locator(".routine-list li.editing");
+  await editor.evaluate((row) => row.scrollIntoView({ block: "start" }));
+  await page.waitForTimeout(400);
+  await takeScreenshot(page, "routine-editor", page.locator(".canvas-panel:visible"), { from: editor, downTo: editor });
 });

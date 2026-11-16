@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import host, { checkAll, promptFor, watchWorkspaces, type Routine, type Run } from "../host.ts";
+import host, { checkAll, promptFor, watchWorkspaces, type Routine, type Run, type ShownRoutine } from "../host.ts";
 import type { PluginActivityEvent, PluginBackgroundContext, StartedConversation, WorkspaceConversationStart, WorkspaceTabContext } from "../mirador/api.ts";
 import { runTitle, type Schedule } from "../schedule.ts";
 
@@ -15,6 +15,8 @@ interface FakeWorkspace {
   folder: string;
   kept: Record<string, unknown>;
   started: WorkspaceConversationStart[];
+  /** The profiles whose agent the tab asked what it offers. */
+  asked: string[];
   refreshes: number;
 }
 
@@ -24,17 +26,24 @@ function fakeContext(workspaces: { id: string; name: string; routines?: Routine[
   const contexts = new Map<string, WorkspaceTabContext>();
   for (const { id, name, routines = [], fired = {}, runs = [] } of workspaces) {
     const storage = storageOf({ routines, fired, runs });
-    const workspace: FakeWorkspace = { id, name, folder: `/tmp/${name}`, kept: storage.kept, started: [], refreshes: 0 };
+    const workspace: FakeWorkspace = { id, name, folder: `/tmp/${name}`, kept: storage.kept, started: [], asked: [], refreshes: 0 };
     made.push(workspace);
     contexts.set(id, {
       workspace: { id, name, folder: workspace.folder },
       storage,
       sharedStorage: storage,
       changed: () => workspace.refreshes++,
-      profiles: () => [{ name: "Daily", agent: "claude" }, { name: "Local", agent: "pi" }],
+      profiles: () => [
+        { name: "Daily", agent: "claude", model: { id: "opus", name: "Opus 5.5" }, effort: "high" },
+        { name: "Local", agent: "pi", model: null, effort: null },
+      ],
       startConversation: async (start) => {
         workspace.started.push(start);
         return { id: `c-${workspace.started.length}`, profile: start.profile } as StartedConversation;
+      },
+      profileChoices: async (profileName) => {
+        workspace.asked.push(profileName);
+        return { models: [{ id: "opus", name: "Opus 5.5" }, { id: "haiku", name: "Haiku 5.5" }], efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] };
       },
     });
   }
@@ -55,6 +64,8 @@ const routine = (over: Partial<Routine> & { id: string }): Routine => ({
   id: over.id,
   name: over.name ?? "Check e2e results",
   profile: over.profile ?? "Daily",
+  ...(over.model !== undefined && { model: over.model }),
+  ...(over.effort !== undefined && { effort: over.effort }),
   what: over.what ?? "Read the newest e2e results",
   outcome: over.outcome ?? "a page listing what failed and why",
   schedule: over.schedule ?? ({ kind: "weekdays", time: "09:00" } as Schedule),
@@ -76,7 +87,7 @@ describe("a routine that is due", () => {
     expect(workspaces.workspaces[0]!.started).toEqual([
       { profile: "Daily", prompt: promptFor(routine({ id: "r1" })), title: "Check e2e results · 12 Nov" },
     ]);
-    expect(started).toEqual([{ routineId: "r1", routineName: "Check e2e results", slot: at(12, 9).getTime(), startedAt: expect.any(Number), conversationId: "c-1", title: "Check e2e results · 12 Nov", status: "running" }]);
+    expect(started).toEqual([{ routineId: "r1", routineName: "Check e2e results", slot: at(12, 9).getTime(), startedAt: expect.any(Number), conversationId: "c-1", title: "Check e2e results · 12 Nov", status: "running", endedAt: null }]);
     expect(workspaces.workspaces[0]!.refreshes).toBe(1);
   });
 
@@ -123,13 +134,27 @@ describe("a routine that is due", () => {
     expect(two.workspaces.map((workspace) => workspace.refreshes)).toEqual([1, 1]);
   });
 
+  test("starts on the model and effort the routine chose, and one that chose none, or was saved before it could, on the profile's own", async () => {
+    const chosen = routine({ id: "r1", model: { id: "haiku", name: "Haiku 5.5" }, effort: { id: "low", name: "Low" } });
+    const own = routine({ id: "r2", name: "Profile's own", model: null, effort: null });
+    const older = routine({ id: "r3", name: "Saved before models" });
+    expect("model" in older).toBe(false);
+    const { context, workspaces: [workspace] } = fakeContext([{ id: "w1", name: "shop", routines: [chosen, own, older] }]);
+    await checkAll(context, at(12, 9));
+    expect(workspace!.started.map(({ profile, model, effort }) => ({ profile, model, effort }))).toEqual([
+      { profile: "Daily", model: "haiku", effort: "low" },
+      { profile: "Daily", model: undefined, effort: undefined },
+      { profile: "Daily", model: undefined, effort: undefined },
+    ]);
+  });
+
   test("a conversation that can't be started is a failed run, said why, and the rest still run", async () => {
     const broken = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1", name: "No such profile", profile: "Ghost" })] }]);
     broken.tabContext("w1").startConversation = async () => {
       throw new Error("There is no profile named Ghost; the profiles are Daily, Local.");
     };
     const runs = await checkAll(broken.context, at(12, 9));
-    expect(runs[0]).toMatchObject({ status: "failed", conversationId: "" });
+    expect(runs[0]).toMatchObject({ status: "failed", conversationId: "", endedAt: expect.any(Number) });
     expect(runsKept(broken.workspaces[0]!)[0]!.status).toBe("failed");
   });
 });
@@ -137,12 +162,16 @@ describe("a routine that is due", () => {
 describe("the tab", () => {
   test("shows the routines with what they say and when they next run, the runs newest first, and the profiles", () => {
     const { tabContext } = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })] }]);
-    const state = host.workspaceTab!.state!(tabContext("w1") as never) as { routines: { words: string; nextRun: string | null }[]; runs: unknown[]; profiles: unknown[] };
+    const state = host.workspaceTab!.state!(tabContext("w1") as never) as { routines: ShownRoutine[]; runs: unknown[]; profiles: unknown[] };
     expect(state.routines[0]).toMatchObject({ words: "Weekdays at 09:00", nextRun: expect.stringContaining("· 09:00") });
+    const { nextRunAt, upcoming } = state.routines[0]!;
+    expect(nextRunAt).toBe(upcoming[0]!);
+    expect(upcoming.length, "a week of weekdays").toBeGreaterThanOrEqual(5);
+    expect(upcoming.every((slot) => new Date(slot).getHours() === 9 && slot > Date.now() && slot <= Date.now() + 7 * 24 * 3_600_000)).toBe(true);
     expect(state.runs).toEqual([]);
     expect(state.profiles).toEqual([
-      { name: "Daily", agent: "claude" },
-      { name: "Local", agent: "pi" },
+      { name: "Daily", agent: "claude", model: "Opus 5.5", effort: "high" },
+      { name: "Local", agent: "pi", model: null, effort: null },
     ]);
   });
 
@@ -171,13 +200,23 @@ describe("the tab", () => {
     expect(() => host.workspaceTab!.action!({ kind: "runNow", id: "gone" }, tabContext("w1") as never)).toThrow("That routine is not in this workspace any more.");
   });
 
+  test("asks a profile's agent which models and efforts a routine can choose", async () => {
+    const { tabContext, workspaces } = fakeContext([{ id: "w1", name: "shop" }]);
+    const choices = await host.workspaceTab!.action!({ kind: "choices", profile: "Local" }, tabContext("w1") as never);
+    expect(choices).toEqual({ models: [{ id: "opus", name: "Opus 5.5" }, { id: "haiku", name: "Haiku 5.5" }], efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] });
+    expect(workspaces[0]!.asked).toEqual(["Local"]);
+  });
+
   test("previews a schedule the user is writing, saying what is wrong with one that isn't readable", async () => {
     const { tabContext } = fakeContext([{ id: "w1", name: "shop" }]);
-    const preview = (await host.workspaceTab!.action!({ kind: "describe", schedule: { kind: "cron", cron: "*/20 * * * *" } }, tabContext("w1") as never)) as { words: string; problem: string | null };
+    const preview = (await host.workspaceTab!.action!({ kind: "describe", schedule: { kind: "cron", cron: "*/20 * * * *" } }, tabContext("w1") as never)) as ShownRoutine;
     expect(preview.words).toBe('Cron "*/20 * * * *"');
     expect(preview.problem).toBeNull();
-    const broken = (await host.workspaceTab!.action!({ kind: "describe", schedule: { kind: "daily", time: "9am" } }, tabContext("w1") as never)) as { problem: string };
+    expect(preview.upcoming, "a busy schedule's week is cut short").toHaveLength(200);
+    expect(preview.upcoming[1]! - preview.upcoming[0]!).toBe(20 * 60_000);
+    const broken = (await host.workspaceTab!.action!({ kind: "describe", schedule: { kind: "daily", time: "9am" } }, tabContext("w1") as never)) as ShownRoutine;
     expect(broken.problem).toContain("is not a time like 07:30");
+    expect(broken).toMatchObject({ nextRunAt: null, upcoming: [] });
   });
 });
 
@@ -198,7 +237,7 @@ describe("a run's conversation ending", () => {
     watchWorkspaces(two.context);
     await checkAll(two.context, at(12, 9));
     host.activity!(event("c-1", "finished"), { storage: two.tabContext("w1").sharedStorage } as never);
-    expect(runsKept(two.workspaces[0]!).map(({ status }) => status)).toEqual(["finished"]);
+    expect(runsKept(two.workspaces[0]!).map(({ status, endedAt }) => ({ status, endedAt }))).toEqual([{ status: "finished", endedAt: at(12, 9, 40).getTime() }]);
     expect(runsKept(two.workspaces[1]!).map(({ status }) => status)).toEqual(["running"]);
     host.activity!(event("c-1", "failed"), { storage: two.tabContext("w1").sharedStorage } as never);
     expect(runsKept(two.workspaces[0]!)[0]!.status).toBe("finished");
@@ -215,7 +254,7 @@ describe("a run's conversation ending", () => {
   });
 
   test("a run left working when Mirador stopped is said stopped, and its slot is not run again", async () => {
-    const runs = [{ routineId: "r1", routineName: "Check e2e results", slot: at(13, 9).getTime(), startedAt: at(13, 9).getTime(), conversationId: "c-1", title: "Check e2e results · 13 Nov", status: "running" as const }];
+    const runs = [{ routineId: "r1", routineName: "Check e2e results", slot: at(13, 9).getTime(), startedAt: at(13, 9).getTime(), conversationId: "c-1", title: "Check e2e results · 13 Nov", status: "running" as const, endedAt: null }];
     const restarted = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1" })], fired: { r1: at(13, 9).getTime() }, runs }]);
     watchWorkspaces(restarted.context);
     expect(runsKept(restarted.workspaces[0]!).map(({ status }) => status)).toEqual(["stopped"]);

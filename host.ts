@@ -5,7 +5,13 @@ import type {
   StartedConversation,
   WorkspaceTabContext,
 } from "./mirador/api.ts";
-import { MONTHS_ABBREVIATED, UnusableSchedule, clockWords, describeSchedule, dueSlot, nextSlot, runTitle, type Schedule } from "./schedule.ts";
+import { MONTHS_ABBREVIATED, UnusableSchedule, clockWords, describeSchedule, dueSlot, nextSlot, runTitle, slotsBetween, type Schedule } from "./schedule.ts";
+
+/** A model or effort the profile's agent offered, kept with its name for the tab to show. */
+export interface Offered {
+  id: string;
+  name: string;
+}
 
 /** A job a workspace runs on its own: what to do, what should come of it, and when. */
 export interface Routine {
@@ -13,6 +19,10 @@ export interface Routine {
   name: string;
   /** The profile the run's conversation starts on, by name. */
   profile: string;
+  /** The model the run's conversation starts on; none, or null, for the profile's own. */
+  model?: Offered | null;
+  /** The effort the run's conversation starts on; none, or null, for the profile's own. */
+  effort?: Offered | null;
   /** What the agent is asked to do. */
   what: string;
   /** What the user wants to be able to see when the run ends. */
@@ -31,18 +41,26 @@ export interface Run {
   conversationId: string;
   title: string;
   status: "running" | "finished" | "failed" | "stopped";
+  /** When its conversation's turn ended, or it couldn't start; null while it works, and for a run Mirador's restart cut short. */
+  endedAt: number | null;
 }
 
-/** A routine as the tab sees it: with what its schedule says and when it next runs. */
+/** A routine as the tab sees it: with what its schedule says, when it next runs, and its slots in the coming week. */
 export interface ShownRoutine extends Routine {
   words: string;
   nextRun: string | null;
+  nextRunAt: number | null;
+  /** Its slots in the coming week, at most UPCOMING_SHOWN of them, as milliseconds since the epoch. */
+  upcoming: number[];
   problem: string | null;
 }
 
 /** How often the clock is looked at again. A timer's wait can stop counting while the computer sleeps, so this is short. */
 const CHECK_EVERY_MS = 30_000;
-const RUNS_KEPT = 20;
+/** Enough for the tab's week to show the days before today, for a routine that runs every few hours. */
+const RUNS_KEPT = 100;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const UPCOMING_SHOWN = 200;
 
 const routinesIn = (context: WorkspaceTabContext) => (context.storage.get("routines") ?? []) as Routine[];
 const runsIn = (context: WorkspaceTabContext) => (context.storage.get("runs") ?? []) as Run[];
@@ -60,10 +78,13 @@ const slotWords = (slot: Date | null) => (slot === null ? null : `${slot.getDate
 /** A routine whose schedule can't be read says so, and holds nothing else up. */
 function showRoutine(routine: Routine): ShownRoutine {
   const words = describeSchedule(routine.schedule);
+  const now = new Date();
   try {
-    return { ...routine, words, nextRun: slotWords(nextSlot(routine.schedule, new Date())), problem: null };
+    const upcoming = slotsBetween(routine.schedule, now, new Date(now.getTime() + WEEK_MS), UPCOMING_SHOWN);
+    const next = upcoming[0] ?? nextSlot(routine.schedule, now);
+    return { ...routine, words, nextRun: slotWords(next), nextRunAt: next?.getTime() ?? null, upcoming: upcoming.map((slot) => slot.getTime()), problem: null };
   } catch (error) {
-    return { ...routine, words, nextRun: null, problem: error instanceof Error ? error.message : String(error) };
+    return { ...routine, words, nextRun: null, nextRunAt: null, upcoming: [], problem: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -89,12 +110,18 @@ const contexts = () => (opened === null ? [] : opened.workspaces().map(({ id }) 
 async function startRun(context: WorkspaceTabContext, routine: Routine, slot: Date): Promise<Run> {
   const begun = { routineId: routine.id, routineName: routine.name, slot: slot.getTime(), startedAt: Date.now(), title: runTitle(routine.name, slot) };
   try {
-    const started: StartedConversation = await context.startConversation({ profile: routine.profile, prompt: promptFor(routine), title: begun.title });
-    return { ...begun, conversationId: started.id, status: "running" };
+    const started: StartedConversation = await context.startConversation({
+      profile: routine.profile,
+      prompt: promptFor(routine),
+      title: begun.title,
+      model: routine.model?.id,
+      effort: routine.effort?.id,
+    });
+    return { ...begun, conversationId: started.id, status: "running", endedAt: null };
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     console.error(`the routine "${routine.name}" couldn't start: ${why}`);
-    return { ...begun, conversationId: "", status: "failed" };
+    return { ...begun, conversationId: "", status: "failed", endedAt: Date.now() };
   }
 }
 
@@ -131,7 +158,7 @@ function tellRunEnded(event: PluginActivityEvent) {
   if (!workspace) return;
   const runs = runsIn(workspace);
   if (!runs.some((run) => run.conversationId === event.conversationId && run.status === "running")) return;
-  saveRuns(workspace, runs.map((run) => (run.conversationId === event.conversationId ? { ...run, status: event.ended } : run)));
+  saveRuns(workspace, runs.map((run) => (run.conversationId === event.conversationId ? { ...run, status: event.ended, endedAt: event.at } : run)));
   workspace.changed();
 }
 
@@ -145,7 +172,7 @@ export function watchWorkspaces(context: PluginBackgroundContext) {
     const workspace = context.inWorkspace(id);
     const runs = runsIn(workspace);
     if (!runs.some((run) => run.status === "running")) continue;
-    saveRuns(workspace, runs.map((run) => (run.status === "running" ? { ...run, status: "stopped" } : run)));
+    saveRuns(workspace, runs.map((run) => (run.status === "running" ? { ...run, status: "stopped", endedAt: null } : run)));
     workspace.changed();
   }
 }
@@ -154,10 +181,20 @@ const tabState = (context: WorkspaceTabContext) => ({
   workspace: context.workspace.name,
   routines: routinesIn(context).map(showRoutine),
   runs: runsIn(context).slice().reverse(),
-  profiles: context.profiles().map(({ name, agent }) => ({ name, agent })),
+  profiles: context.profiles().map(({ name, agent, model, effort }) => ({ name, agent, model: model?.name ?? null, effort })),
 });
 
-const blankRoutine = (): Routine => ({ id: crypto.randomUUID(), name: "", profile: "", what: "", outcome: "", schedule: { kind: "weekdays", time: "09:00" }, on: true });
+const blankRoutine = (): Routine => ({
+  id: crypto.randomUUID(),
+  name: "",
+  profile: "",
+  model: null,
+  effort: null,
+  what: "",
+  outcome: "",
+  schedule: { kind: "weekdays", time: "09:00" },
+  on: true,
+});
 
 type TabAction =
   | { kind: "new" }
@@ -165,7 +202,8 @@ type TabAction =
   | { kind: "save"; routine: Routine }
   | { kind: "delete"; id: string }
   | { kind: "toggle"; id: string }
-  | { kind: "runNow"; id: string };
+  | { kind: "runNow"; id: string }
+  | { kind: "choices"; profile: string };
 
 const tabAction = {
   state: tabState,
@@ -200,13 +238,15 @@ const tabAction = {
           return run;
         });
       }
+      case "choices":
+        return context.profileChoices(asked.profile);
     }
   },
 };
 
 /**
- * Routines: jobs a workspace runs on its own. Each is a prompt, what should come of it, a profile to run on and a
- * schedule. When one is due, Mirador starts a fresh conversation for it, which waits for you and notifies you as any
+ * Routines: jobs a workspace runs on its own. Each is a prompt, what should come of it, a profile to run on, with a
+ * model and effort of its own if chosen, and a schedule. When one is due, Mirador starts a fresh conversation for it, which waits for you and notifies you as any
  * other conversation would. Slots missed while the Mac slept come back as one run.
  */
 const host: CanvasHost = {

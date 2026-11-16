@@ -1,5 +1,5 @@
 /**
- * Mirador's canvas plugin API, version 11, as this plugin uses it. Mirador doesn't publish these types yet, so this is a
+ * Mirador's canvas plugin API, version 18, as this plugin uses it. Mirador doesn't publish these types yet, so this is a
  * copy of its shared/canvas-plugins.ts.
  */
 
@@ -233,6 +233,14 @@ export interface PluginProfile {
   name: string;
   /** The agent it runs, as Mirador names it, e.g. "claude" or "codex". */
   agent: string;
+  /**
+   * The model its conversations start on, as the profile sets it: the id Mirador passes to its agent, e.g. "opus", and
+   * the name the agent gave it in the profile's latest conversation, e.g. "Opus 5.5", else the id. Null when the profile
+   * leaves the model to its agent. Plugin API 15 brought it.
+   */
+  model: { id: string; name: string } | null;
+  /** The effort its conversations start on, as the profile sets it, e.g. "high"; null when it leaves it to its agent. Plugin API 15 brought it. */
+  effort: string | null;
 }
 
 /** A conversation a plugin starts of its own in a workspace: on the profile of that name, working on `prompt` at once. */
@@ -262,6 +270,22 @@ export interface WorkspaceTabContext {
    * when none has that name. Plugin API 11 brought it.
    */
   startConversation(start: WorkspaceConversationStart): Promise<StartedConversation>;
+  /**
+   * What a conversation that starts on the profile of that name can choose, as its agent says, for `startConversation`'s
+   * `model` and `effort`. Mirador asks the agent as the Profiles dialog does, starting it for a few seconds unless it
+   * answered in the last 15 minutes. Resolves to null when the agent couldn't start, didn't answer within 30 seconds, or
+   * answered without listing any choices, and rejects, naming the profiles there are, when none has that name. Plugin
+   * API 18 brought it.
+   */
+  profileChoices(profileName: string): Promise<ProfileChoices | null>;
+}
+
+/** What a profile's agent offers a conversation, each by the id `startConversation` takes and the name the agent gives it. */
+export interface ProfileChoices {
+  /** None from an agent that offers no choice of model. */
+  models: { id: string; name: string }[];
+  /** The efforts of the model the agent starts on, which isn't always the profile's; none for a model that has no effort. */
+  efforts: { id: string; name: string }[];
 }
 
 /** What a plugin's background work reaches: the workspaces, each as its tab would. Plugin API 11 brought it. */

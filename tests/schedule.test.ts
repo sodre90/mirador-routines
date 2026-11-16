@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Schedule } from "../schedule.ts";
-import { UnusableSchedule, clockWords, describeSchedule, dueSlot, nextSlot, runTitle } from "../schedule.ts";
+import { UnusableSchedule, clockWords, describeSchedule, dueSlot, nextSlot, runTitle, slotsBetween } from "../schedule.ts";
 
 /** A moment on the clock the user reads: Thursday 12 November 2026. */
 const at = (day: number, hour: number, minute = 0) => new Date(2026, 10, day, hour, minute);
@@ -101,4 +101,28 @@ describe("a routine that missed its slots", () => {
 test("a run is titled after its routine and dated", () => {
   expect(runTitle("Check e2e results", at(12, 7, 30))).toBe("Check e2e results · 12 Nov");
   expect(clockWords(at(12, 7, 5))).toBe("07:05");
+});
+
+describe("a week of slots, for the tab", () => {
+  test("lists the slots after a moment up to an end, in order", () => {
+    const weekdays = { kind: "weekdays", time: "09:00" } as const;
+    expect(slotsBetween(weekdays, at(12, 10), at(19, 10), 50).map(words)).toEqual(["13 9:0", "16 9:0", "17 9:0", "18 9:0", "19 9:0"]);
+    expect(slotsBetween(weekdays, at(12, 10), at(19, 8), 50).map(words)).toEqual(["13 9:0", "16 9:0", "17 9:0", "18 9:0"]);
+  });
+
+  test("stops at the most asked for, however many the schedule has", () => {
+    expect(slotsBetween({ kind: "hours", every: 1 }, at(12, 0), at(19, 0), 30)).toHaveLength(30);
+    expect(slotsBetween({ kind: "cron", cron: "* * * * *" }, at(12, 0), at(19, 0), 5).map(words)).toEqual(["12 0:1", "12 0:2", "12 0:3", "12 0:4", "12 0:5"]);
+  });
+
+  test("is empty for a cron line with no slot by the end, without looking years ahead", () => {
+    const started = performance.now();
+    expect(slotsBetween({ kind: "cron", cron: "0 9 1 1 *" }, at(12, 0), at(19, 0), 50)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  test("next slot keeps within an end it is given", () => {
+    expect(nextSlot({ kind: "daily", time: "07:30" }, at(12, 8), at(13, 7))).toBeNull();
+    expect(words(nextSlot({ kind: "daily", time: "07:30" }, at(12, 8), at(13, 7, 30)))).toBe("13 7:30");
+  });
 });

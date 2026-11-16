@@ -127,8 +127,13 @@ const cronHolds = (fields: CronFields, at: Date) => {
   return fields.minutes.has(at.getMinutes()) && fields.hours.has(at.getHours()) && fields.months.has(at.getMonth() + 1) && dayHolds;
 };
 
-/** The first slot strictly after `after`, or null when the schedule has none within four years. */
-export function nextSlot(schedule: Schedule, after: Date): Date | null {
+/** The first slot strictly after `after` and no later than `until`, or null when the schedule has none by then: four years on, unless said. */
+export function nextSlot(schedule: Schedule, after: Date, until = new Date(after.getTime() + LOOK_AHEAD_MS)): Date | null {
+  const slot = firstSlotAfter(schedule, after, until);
+  return slot !== null && slot.getTime() <= until.getTime() ? slot : null;
+}
+
+function firstSlotAfter(schedule: Schedule, after: Date, until: Date): Date | null {
   if (schedule.kind === "hours") {
     const every = schedule.every;
     if (!Number.isInteger(every) || every < 1 || every > 24) throw new UnusableSchedule(`every ${every} hours is not between 1 and 24.`);
@@ -147,10 +152,17 @@ export function nextSlot(schedule: Schedule, after: Date): Date | null {
   }
   const fields = parseCron(schedule.cron);
   const from = Math.floor(after.getTime() / MINUTE_MS) * MINUTE_MS + MINUTE_MS;
-  for (let at = from; at - from <= LOOK_AHEAD_MS; at += MINUTE_MS) {
+  for (let at = from; at <= until.getTime(); at += MINUTE_MS) {
     if (cronHolds(fields, new Date(at))) return new Date(at);
   }
   return null;
+}
+
+/** The schedule's slots after `after` and no later than `until`, the first `most` of them, for the tab's week. */
+export function slotsBetween(schedule: Schedule, after: Date, until: Date, most: number): Date[] {
+  const slots: Date[] = [];
+  for (let slot = nextSlot(schedule, after, until); slot !== null && slots.length < most; slot = nextSlot(schedule, slot, until)) slots.push(slot);
+  return slots;
 }
 
 /**

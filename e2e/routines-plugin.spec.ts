@@ -15,14 +15,22 @@ const PLUGIN = process.env.MIRADOR_ROUTINES_PLUGIN ?? import.meta.dirname;
 const host = new TestHost({ fakePrograms: true });
 const promptsFile = join(host.root, "prompts");
 const agentSaw = () => readFileSync(promptsFile, "utf8");
+const agentLog = join(host.root, "agent-log");
+const agentDid = () => readFileSync(agentLog, "utf8");
 
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
   mkdirSync(join(host.dataDir, "plugins"), { recursive: true });
   symlinkSync(PLUGIN, join(host.dataDir, "plugins", "routines"));
-  writeBunProgram(host.fakeProgramsDir, "opencode", join(import.meta.dirname, "fake-acp-agent.ts"), { FAKE_ACP_PROMPTS: promptsFile });
+  writeBunProgram(host.fakeProgramsDir, "opencode", join(import.meta.dirname, "fake-acp-agent.ts"), {
+    FAKE_ACP_PROMPTS: promptsFile,
+    FAKE_ACP_MODES: "1",
+    FAKE_ACP_MODELS: "1",
+    FAKE_ACP_LOG: agentLog,
+  });
   writeFileSync(promptsFile, "");
+  writeFileSync(agentLog, "");
   await host.start();
 });
 test.afterAll(async () => {
@@ -50,18 +58,29 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await expect(tabView(page).getByText("Nothing runs here yet.")).toBeVisible();
   });
 
+  await test.step("the empty tab's templates start a routine already written", async () => {
+    await tabView(page).locator(".template", { hasText: "Nightly e2e check" }).click();
+    await expect(tabView(page).locator('[name="name"]')).toHaveValue("Nightly e2e check");
+    await expect(tabView(page).locator('[name="preset"]:checked')).toHaveValue("daily");
+    await tabView(page).getByRole("button", { name: "Cancel" }).click();
+    await expect(tabView(page).locator(".editor")).toHaveCount(0);
+  });
+
   await test.step("the editor previews the schedule and saves the routine", async () => {
     await tabView(page).getByRole("button", { name: "New routine" }).click();
     await tabView(page).locator('[name="name"]').fill("Check e2e results");
     await tabView(page).locator('[name="profile"]').selectOption("nightly");
     await tabView(page).locator('[name="what"]').fill("Read the newest e2e results.");
     await tabView(page).locator('[name="outcome"]').fill("a page listing what failed and why.");
-    await tabView(page).locator('[name="preset"]').selectOption("daily");
+    await tabView(page).locator('[name="preset"][value="daily"]').check();
     await tabView(page).locator('[name="time"]').fill("07:30");
     await expect(tabView(page).locator(".preview")).toContainText("Every day at 07:30 · next");
     await tabView(page).getByRole("button", { name: "Save routine" }).click();
     await expect(tabView(page).locator(".routine-list li")).toHaveCount(1);
     await expect(tabView(page).locator(".when-words")).toContainText("Every day at 07:30");
+    await expect(tabView(page).locator(".when-words .countdown")).toHaveText(/^in \d+(h \d+m|m|s)$/);
+    await expect(tabView(page).locator(".pill.next")).toContainText("Next · Check e2e results in");
+    await expect(tabView(page).locator(".week .lane", { hasText: "Check e2e results" }).locator(".dot.slot.next")).toHaveCount(1);
     const looseText = await tabView(page).locator("main").evaluate((main) => [...main.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent));
     expect(looseText, "the closed editor leaves nothing behind, not the word null").toEqual([]);
   });
@@ -69,9 +88,9 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
   await test.step("Edit opens the routine as it was saved, with only its chosen days ticked", async () => {
     const tab = tabView(page);
     await tab.getByRole("button", { name: "Edit" }).click();
-    await expect(tab.locator('[name="preset"]')).toHaveValue("daily");
+    await expect(tab.locator('[name="preset"]:checked')).toHaveValue("daily");
     await expect(tab.locator('[name="time"]')).toHaveValue("07:30");
-    await tab.locator('[name="preset"]').selectOption("days");
+    await tab.locator('[name="preset"][value="days"]').check();
     await expect(tab.locator('[name="day"]:checked'), "a routine with no chosen days starts with none ticked").toHaveCount(0);
     for (const day of ["Mon", "Thu"]) await tab.locator(".day", { hasText: day }).locator("input").check();
     await expect(tab.locator(".preview")).toContainText("Mon, Thu at 07:30 · next");
@@ -79,7 +98,7 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await expect(tab.locator(".when-words")).toContainText("Mon, Thu at 07:30");
 
     await tab.getByRole("button", { name: "Edit" }).click();
-    await expect(tab.locator('[name="preset"]')).toHaveValue("days");
+    await expect(tab.locator('[name="preset"]:checked')).toHaveValue("days");
     await expect(tab.locator('[name="day"]:checked')).toHaveCount(2);
     await expect(tab.locator(".day", { hasText: "Mon" }).locator("input")).toBeChecked();
     await expect(tab.locator(".day", { hasText: "Thu" }).locator("input")).toBeChecked();
@@ -93,14 +112,45 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await expect(tabView(page).locator(".run-title")).toContainText("Check e2e results ·");
     await expect.poll(agentSaw).toContain("Read the newest e2e results.");
     await expect.poll(agentSaw).toContain("a page listing what failed and why.");
+    await expect(tabView(page).locator(".week .lane", { hasText: "Check e2e results" }).locator(".dot:not(.slot)")).toHaveCount(1);
+    await expect(tabView(page).locator(".routine-list li .history .dot")).toHaveCount(1);
+  });
+
+  await test.step("the editor offers the models and efforts the profile's agent lists, and a run starts on the ones chosen", async () => {
+    const tab = tabView(page);
+    await tab.getByRole("button", { name: "Edit" }).click();
+    await expect(tab.locator('[name="model"] option')).toHaveText(["Agent's default", "Default (recommended)", "Opus", "Haiku"]);
+    await expect(tab.locator('[name="effort"] option')).toHaveText(["Agent's default", "Low", "High"]);
+    await expect(tab.locator('[name="model"]'), "a routine that never chose one runs on the profile's own").toHaveValue("");
+    await tab.locator('[name="model"]').selectOption("opus");
+    await tab.locator('[name="effort"]').selectOption("high");
+    await tab.getByRole("button", { name: "Save routine" }).click();
+    await expect(tab.locator(".routine-list li .chip")).toHaveText("nightly · Opus · High");
+
+    await tab.getByRole("button", { name: "Edit" }).click();
+    await expect(tab.locator('[name="model"]')).toHaveValue("opus");
+    await expect(tab.locator('[name="effort"]')).toHaveValue("high");
+    await tab.getByRole("button", { name: "Cancel" }).click();
+
+    await tab.getByRole("button", { name: "Run now" }).click();
+    await expect(tab.locator(".run-list li")).toHaveCount(2);
+    await expect.poll(agentDid).toContain("set model to opus");
+    await expect.poll(agentDid).toContain("set effort to high");
   });
 
   await test.step("a bad cron line is said where the routine is listed", async () => {
     await tabView(page).getByRole("button", { name: "Edit" }).click();
-    await tabView(page).locator('[name="preset"]').selectOption("cron");
+    await tabView(page).locator('[name="preset"][value="cron"]').check();
     await tabView(page).locator('[name="cron"]').fill("70 7 * * *");
     await expect(tabView(page).locator(".preview.failed")).toContainText("is not between 0 and 59");
     await tabView(page).getByRole("button", { name: "Save routine" }).click();
     await expect(tabView(page).locator(".when-words.failed")).toContainText("is not between 0 and 59");
+  });
+
+  await test.step("a run opens the conversation it started", async () => {
+    const before = page.url();
+    await tabView(page).locator(".run-list li button").first().click();
+    await expect(page).not.toHaveURL(before);
+    await expect(page.locator(".timeline:visible .message.user", { hasText: "Read the newest e2e results." })).toBeVisible();
   });
 });
