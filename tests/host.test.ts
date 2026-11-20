@@ -21,7 +21,7 @@ interface FakeWorkspace {
 }
 
 /** A background context over the workspaces named, whose conversations start on `id` and whose tabs count refreshes. */
-function fakeContext(workspaces: { id: string; name: string; routines?: Routine[]; fired?: Record<string, number>; runs?: Run[] }[]) {
+function fakeContext(workspaces: { id: string; name: string; routines?: unknown[]; fired?: Record<string, number>; runs?: Run[] }[]) {
   const made: FakeWorkspace[] = [];
   const contexts = new Map<string, WorkspaceTabContext>();
   for (const { id, name, routines = [], fired = {}, runs = [] } of workspaces) {
@@ -34,15 +34,15 @@ function fakeContext(workspaces: { id: string; name: string; routines?: Routine[
       sharedStorage: storage,
       changed: () => workspace.refreshes++,
       profiles: () => [
-        { name: "Daily", agent: "claude", model: { id: "opus", name: "Opus 5.5" }, effort: "high" },
-        { name: "Local", agent: "pi", model: null, effort: null },
+        { id: "daily", name: "Daily", agent: "claude", model: { id: "opus", name: "Opus 5.5" }, effort: "high" },
+        { id: "local", name: "Local", agent: "pi", model: null, effort: null },
       ],
       startConversation: async (start) => {
         workspace.started.push(start);
-        return { id: `c-${workspace.started.length}`, profile: start.profile } as StartedConversation;
+        return { id: `c-${workspace.started.length}`, profile: start.profileId } as StartedConversation;
       },
-      profileChoices: async (profileName) => {
-        workspace.asked.push(profileName);
+      profileChoices: async (profileId) => {
+        workspace.asked.push(profileId);
         return { models: [{ id: "opus", name: "Opus 5.5" }, { id: "haiku", name: "Haiku 5.5" }], efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] };
       },
     });
@@ -63,7 +63,7 @@ function fakeContext(workspaces: { id: string; name: string; routines?: Routine[
 const routine = (over: Partial<Routine> & { id: string }): Routine => ({
   id: over.id,
   name: over.name ?? "Check e2e results",
-  profile: over.profile ?? "Daily",
+  profile: over.profile ?? { id: "daily", name: "Daily" },
   ...(over.model !== undefined && { model: over.model }),
   ...(over.effort !== undefined && { effort: over.effort }),
   what: over.what ?? "Read the newest e2e results",
@@ -85,7 +85,7 @@ describe("a routine that is due", () => {
   test("starts its own conversation at its slot, titled after the routine and dated", async () => {
     const started = await checkAll(workspaces.context, at(12, 9));
     expect(workspaces.workspaces[0]!.started).toEqual([
-      { profile: "Daily", prompt: promptFor(routine({ id: "r1" })), title: "Check e2e results · 12 Nov" },
+      { profileId: "daily", prompt: promptFor(routine({ id: "r1" })), title: "Check e2e results · 12 Nov" },
     ]);
     expect(started).toEqual([{ routineId: "r1", routineName: "Check e2e results", slot: at(12, 9).getTime(), startedAt: expect.any(Number), conversationId: "c-1", title: "Check e2e results · 12 Nov", status: "running", endedAt: null }]);
     expect(workspaces.workspaces[0]!.refreshes).toBe(1);
@@ -142,21 +142,39 @@ describe("a routine that is due", () => {
     expect("model" in older).toBe(false);
     const { context, workspaces: [workspace] } = fakeContext([{ id: "w1", name: "shop", routines: [chosen, own, older] }]);
     await checkAll(context, at(12, 9));
-    expect(workspace!.started.map(({ profile, model, effort }) => ({ profile, model, effort }))).toEqual([
-      { profile: "Daily", model: "haiku", effort: "low" },
-      { profile: "Daily", model: undefined, effort: undefined },
-      { profile: "Daily", model: undefined, effort: undefined },
+    expect(workspace!.started.map(({ profileId, model, effort }) => ({ profileId, model, effort }))).toEqual([
+      { profileId: "daily", model: "haiku", effort: "low" },
+      { profileId: "daily", model: undefined, effort: undefined },
+      { profileId: "daily", model: undefined, effort: undefined },
     ]);
   });
 
-  test("a conversation that can't be started is a failed run, said why, and the rest still run", async () => {
-    const broken = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1", name: "No such profile", profile: "Ghost" })] }]);
-    broken.tabContext("w1").startConversation = async () => {
-      throw new Error("There is no profile named Ghost; the profiles are Daily, Local.");
+  test("a conversation that can't be started is a failed run that keeps why, and the rest still run", async () => {
+    const broken = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1", name: "Refused" }), routine({ id: "r2", name: "Fine", profile: { id: "local", name: "Local" } })] }]);
+    broken.tabContext("w1").startConversation = async ({ profileId }) => {
+      if (profileId === "daily") throw new Error("The agent didn't start.");
+      return { id: "c-fine", profile: "Local" };
     };
     const runs = await checkAll(broken.context, at(12, 9));
-    expect(runs[0]).toMatchObject({ status: "failed", conversationId: "", endedAt: expect.any(Number) });
-    expect(runsKept(broken.workspaces[0]!)[0]!.status).toBe("failed");
+    expect(runs[0]).toMatchObject({ status: "failed", conversationId: "", endedAt: expect.any(Number), problem: "The agent didn't start." });
+    expect(runs[1]).toMatchObject({ status: "running", conversationId: "c-fine" });
+    expect(runsKept(broken.workspaces[0]!)[0]!.problem).toBe("The agent didn't start.");
+  });
+
+  test("runs on its profile renamed since it was saved, and keeps the profile's new name, to name it by should it go", async () => {
+    const renamed = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1", profile: { id: "daily", name: "Daily gpt-6.1-sol" } })] }]);
+    await checkAll(renamed.context, at(12, 9));
+    expect(renamed.workspaces[0]!.started.map(({ profileId }) => profileId)).toEqual(["daily"]);
+    expect((renamed.workspaces[0]!.kept["routines"] as Routine[])[0]!.profile).toEqual({ id: "daily", name: "Daily" });
+    const state = host.workspaceTab!.state!(renamed.tabContext("w1") as never) as { routines: ShownRoutine[] };
+    expect(state.routines[0]).toMatchObject({ profile: { id: "daily", name: "Daily" }, problem: null });
+  });
+
+  test("whose profile is gone fails without starting, saying which profile it was", async () => {
+    const gone = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1", profile: { id: "deleted", name: "Night runs" } })] }]);
+    const runs = await checkAll(gone.context, at(12, 9));
+    expect(gone.workspaces[0]!.started).toEqual([]);
+    expect(runs[0]).toMatchObject({ status: "failed", problem: "the profile it runs on, Night runs, is gone; edit it to choose another" });
   });
 });
 
@@ -171,8 +189,33 @@ describe("the tab", () => {
     expect(upcoming.every((slot) => new Date(slot).getHours() === 9 && slot > Date.now() && slot <= Date.now() + 7 * 24 * 3_600_000)).toBe(true);
     expect(state.runs).toEqual([]);
     expect(state.profiles).toEqual([
-      { name: "Daily", agent: "claude", model: "Opus 5.5", effort: "high" },
-      { name: "Local", agent: "pi", model: null, effort: null },
+      { id: "daily", name: "Daily", agent: "claude", model: "Opus 5.5", effort: "high" },
+      { id: "local", name: "Local", agent: "pi", model: null, effort: null },
+    ]);
+  });
+
+  test("flags a routine whose profile is gone, naming it, and won't save one without a profile", async () => {
+    const { tabContext, workspaces } = fakeContext([{ id: "w1", name: "shop", routines: [routine({ id: "r1", profile: { id: "deleted", name: "Night runs" } })] }]);
+    const state = host.workspaceTab!.state!(tabContext("w1") as never) as { routines: ShownRoutine[] };
+    expect(state.routines[0]).toMatchObject({ profile: { id: "deleted", name: "Night runs" }, problem: "the profile it runs on, Night runs, is gone; edit it to choose another" });
+    const unchanged = routine({ id: "r1", profile: { id: "deleted", name: "Night runs" }, name: "Edited" });
+    expect(() => host.workspaceTab!.action!({ kind: "save", routine: unchanged }, tabContext("w1") as never)).toThrow("Choose a profile for it to run on.");
+    expect((workspaces[0]!.kept["routines"] as Routine[])[0]!.name).toBe("Check e2e results");
+    await host.workspaceTab!.action!({ kind: "save", routine: { ...unchanged, profile: { id: "local", name: "local" } } }, tabContext("w1") as never);
+    expect((workspaces[0]!.kept["routines"] as Routine[])[0]!.profile, "the name is the profile's own").toEqual({ id: "local", name: "Local" });
+  });
+
+  test("a routine saved naming its profile takes that profile's id and name, whatever the name's case, and is kept so", () => {
+    const named = (id: string, profile: string) => ({ ...routine({ id }), profile });
+    const { tabContext, workspaces } = fakeContext([{ id: "w1", name: "shop", routines: [named("r1", "daily "), named("r2", "Pi LLM-GW gpt-6.1-sol")] }]);
+    const state = host.workspaceTab!.state!(tabContext("w1") as never) as { routines: ShownRoutine[] };
+    expect((workspaces[0]!.kept["routines"] as Routine[]).map(({ profile }) => profile)).toEqual([
+      { id: "daily", name: "Daily" },
+      { id: "", name: "Pi LLM-GW gpt-6.1-sol" },
+    ]);
+    expect(state.routines.map(({ profile, problem }) => ({ profile, problem }))).toEqual([
+      { profile: { id: "daily", name: "Daily" }, problem: null },
+      { profile: { id: "", name: "Pi LLM-GW gpt-6.1-sol" }, problem: "the profile it runs on, Pi LLM-GW gpt-6.1-sol, is gone; edit it to choose another" },
     ]);
   });
 
@@ -211,9 +254,9 @@ describe("the tab", () => {
 
   test("asks a profile's agent which models and efforts a routine can choose", async () => {
     const { tabContext, workspaces } = fakeContext([{ id: "w1", name: "shop" }]);
-    const choices = await host.workspaceTab!.action!({ kind: "choices", profile: "Local" }, tabContext("w1") as never);
+    const choices = await host.workspaceTab!.action!({ kind: "choices", profileId: "local" }, tabContext("w1") as never);
     expect(choices).toEqual({ models: [{ id: "opus", name: "Opus 5.5" }, { id: "haiku", name: "Haiku 5.5" }], efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] });
-    expect(workspaces[0]!.asked).toEqual(["Local"]);
+    expect(workspaces[0]!.asked).toEqual(["local"]);
   });
 
   test("previews a schedule the user is writing, saying what is wrong with one that isn't readable", async () => {

@@ -95,7 +95,11 @@ const say = (text, failed = false) => {
   notice.textContent = text;
   notice.classList.toggle("failed", failed);
 };
-const send = (action) => window.mirador.send(action).catch((error) => say(error.message, true));
+const send = (action) =>
+  window.mirador.send(action).then(
+    (answer) => (say(""), answer),
+    (error) => say(error.message, true),
+  );
 const openConversation = (run) => window.mirador.openConversation(run.conversationId).catch((error) => say(error.message, true));
 
 const pad = (number) => String(number).padStart(2, "0");
@@ -170,7 +174,7 @@ function runControl(run, tag, attributes, ...children) {
 }
 
 function runDot(run, at, moved) {
-  const hint = `${run.routineName} · ${STATUS_WORDS[run.status] ?? run.status} · ${dateWords(run.startedAt)}`;
+  const hint = [run.routineName, STATUS_WORDS[run.status] ?? run.status, dateWords(run.startedAt), run.problem].filter(Boolean).join(" · ");
   return runControl(run, "button", {
     class: `dot ${run.status}${moved.has(runKey(run)) ? " fresh" : ""}`,
     style: at ? `--x:${at(run.startedAt)}` : null,
@@ -192,7 +196,7 @@ function lane(routine, week, moved) {
   return el(
     "div",
     { class: ["lane", routine.on ? "" : "off", routine.problem ? "broken" : "", coming.length > DENSE_LANE ? "dense" : ""].filter(Boolean).join(" ") },
-    el("button", { class: "lane-name", type: "button", onclick: () => showCard(routine.id), "data-hint": routine.problem ?? `${routine.words} · on ${routine.profile}` }, name),
+    el("button", { class: "lane-name", type: "button", onclick: () => showCard(routine.id), "data-hint": routine.problem ?? `${routine.words} · on ${routine.profile.name}` }, name),
     el(
       "div",
       { class: "track" },
@@ -278,7 +282,7 @@ function runNowButton(routine) {
     {
       class: "btn go",
       type: "button",
-      "data-hint": `Start a conversation on ${routine.profile} now`,
+      "data-hint": `Start a conversation on ${routine.profile.name} now`,
       onclick: () => {
         button.disabled = true;
         button.lastChild.textContent = "Starting…";
@@ -366,20 +370,20 @@ function card(routine, moved) {
   );
 }
 
-const runsOnWords = (routine) => [routine.profile || "no profile", routine.model?.name, routine.effort?.name].filter(Boolean).join(" · ");
+const runsOnWords = (routine) => [routine.profile.name || "no profile", routine.model?.name, routine.effort?.name].filter(Boolean).join(" · ");
 
 /** What each profile's agent offers, asked once while the page lives; one that didn't answer is asked again the next time. */
 const offeredBy = new Map();
-function askOffered(profileName) {
-  if (!offeredBy.has(profileName)) {
-    const forget = () => offeredBy.delete(profileName);
-    const asking = window.mirador.send({ kind: "choices", profile: profileName }).then(
+function askOffered(profileId) {
+  if (!offeredBy.has(profileId)) {
+    const forget = () => offeredBy.delete(profileId);
+    const asking = window.mirador.send({ kind: "choices", profileId }).then(
       (offered) => offered ?? (forget(), null),
       (error) => (forget(), Promise.reject(error)),
     );
-    offeredBy.set(profileName, asking);
+    offeredBy.set(profileId, asking);
   }
-  return offeredBy.get(profileName);
+  return offeredBy.get(profileId);
 }
 
 /**
@@ -397,7 +401,7 @@ function choicesOf(routine, profileSelect) {
   model.addEventListener("change", () => (chosen.model = model.value));
   effort.addEventListener("change", () => (chosen.effort = effort.value));
 
-  const profileNow = () => state.profiles.find((each) => each.name === profileSelect.value);
+  const profileNow = () => state.profiles.find((each) => each.id === profileSelect.value);
   const fill = (select, ownWords, offered, savedChoice, chosenId) => {
     const unlisted = savedChoice && !offered.some(({ id }) => id === savedChoice.id) ? [savedChoice] : [];
     select.replaceChildren(el("option", { value: "" }, ownWords), ...[...offered, ...unlisted].map(({ id, name }) => el("option", { value: id }, name)));
@@ -414,17 +418,17 @@ function choicesOf(routine, profileSelect) {
     note.classList.toggle("asking", asking);
   };
   const ask = () => {
-    const profileName = profileSelect.value;
+    const profile = profileNow();
     show(null);
-    if (!profileName) return tell("");
-    tell(`Asking ${profileName}'s agent for its models…`, true);
-    askOffered(profileName).then(
+    if (!profile) return tell("");
+    tell(`Asking ${profile.name}'s agent for its models…`, true);
+    askOffered(profile.id).then(
       (offered) => {
-        if (profileSelect.value !== profileName) return;
+        if (profileSelect.value !== profile.id) return;
         show(offered);
         tell(offered ? "" : "The agent didn't say what it offers, so only the profile's own is here.");
       },
-      (error) => profileSelect.value === profileName && tell(error.message),
+      (error) => profileSelect.value === profile.id && tell(error.message),
     );
   };
   profileSelect.addEventListener("change", () => {
@@ -469,6 +473,13 @@ function previewOf(form, line) {
 const choice = (type, name, value, checked, label, className = "choice") =>
   el("label", { class: className }, el("input", { type, name, value, checked }), el("span", { text: label }));
 
+/** Stands chosen in the editor while the routine's profile is gone, rather than the first profile looking chosen. */
+function profileGoneOption(routine) {
+  if (state.profiles.some(({ id }) => id === routine.profile.id)) return null;
+  const words = routine.profile.name ? `${routine.profile.name} is gone: choose another` : "Choose a profile";
+  return el("option", { value: "", selected: true, disabled: true }, words);
+}
+
 function editorFor(routine) {
   const preset = PRESETS.find((each) => each.kind === routine.schedule.kind) ?? PRESETS[0];
   const form = el("div", { class: "editor" });
@@ -476,7 +487,8 @@ function editorFor(routine) {
   const profile = el(
     "select",
     { name: "profile", "aria-label": "Profile" },
-    ...state.profiles.map((each) => el("option", { value: each.name, selected: each.name === routine.profile }, `${each.name} · ${each.agent}`)),
+    profileGoneOption(routine),
+    ...state.profiles.map((each) => el("option", { value: each.id, selected: each.id === routine.profile.id }, `${each.name} · ${each.agent}`)),
   );
   const choices = choicesOf(routine, profile);
   const what = el("textarea", { name: "what", placeholder: "What the agent should do", rows: 3 });
@@ -516,7 +528,7 @@ function editorFor(routine) {
   const save = () =>
     send({
       kind: "save",
-      routine: { ...routine, name: name.value.trim(), profile: profile.value, ...choices.read(), what: what.value.trim(), outcome: outcome.value.trim(), schedule: scheduleFrom(form) },
+      routine: { ...routine, name: name.value.trim(), profile: { ...routine.profile, id: profile.value }, ...choices.read(), what: what.value.trim(), outcome: outcome.value.trim(), schedule: scheduleFrom(form) },
     }).then((saved) => {
       if (!saved) return;
       routineSaved = saved.id;
@@ -555,7 +567,9 @@ function openEditor(routine) {
 }
 
 const openBlank = (template = {}) =>
-  send({ kind: "new" }).then((blank) => blank && openEditor({ ...blank, profile: state.profiles[0]?.name ?? "", ...template }));
+  send({ kind: "new" }).then((blank) => blank && openEditor({ ...blank, profile: firstProfile() ?? blank.profile, ...template }));
+
+const firstProfile = () => state.profiles.slice(0, 1).map(({ id, name }) => ({ id, name }))[0];
 
 /**
  * The routines' cards, with the open editor where its routine is, or first for a new one. The editor's node stays in the
@@ -615,6 +629,7 @@ function runRow(run, moved) {
       el("span", { class: "run-title", text: run.title }),
       when,
       opensConversations && run.conversationId ? el("span", { class: "go-to" }, arrowIcon()) : null,
+      run.problem ? el("span", { class: "run-problem", text: run.problem }) : null,
     ),
   );
 }
@@ -854,6 +869,7 @@ button.run-open:hover .go-to, button.run-open:focus-visible .go-to { opacity: 1;
 .status.running { color: var(--accent); } .status.finished { color: var(--ok); } .status.failed { color: var(--danger); }
 .run-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .15s; }
 .run-when { color: var(--faint); font-size: .88rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-problem { grid-column: 3 / -1; color: var(--danger); font-size: .85rem; }
 .run-list li.fresh { animation: slide-in .6s cubic-bezier(.2, .8, .3, 1); }
 @keyframes slide-in { from { opacity: 0; transform: translateY(-.6rem); background: var(--accent-soft); } }
 .run-list li.changed .status-dot { animation: burst .9s ease-out; }

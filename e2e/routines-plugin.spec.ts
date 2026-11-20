@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { addWorkspace, createProfile, signIn, untilFramePainted } from "./helpers.ts";
+import { addWorkspace, createProfile, openProfiles, openProfileTab, signIn, untilFramePainted } from "./helpers.ts";
 import { TestHost, writeBunProgram } from "./test-host.ts";
 
 const PLUGIN = process.env.MIRADOR_ROUTINES_PLUGIN ?? import.meta.dirname;
@@ -91,7 +91,7 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
   await test.step("the editor previews the schedule and saves the routine", async () => {
     await tabView(page).getByRole("button", { name: "New routine" }).click();
     await tabView(page).locator('[name="name"]').fill("Check e2e results");
-    await tabView(page).locator('[name="profile"]').selectOption("nightly");
+    await tabView(page).locator('[name="profile"]').selectOption({ label: "nightly · opencode" });
     await tabView(page).locator('[name="what"]').fill("Read the newest e2e results.");
     await tabView(page).locator('[name="outcome"]').fill("a page listing what failed and why.");
     await tabView(page).locator('[name="preset"][value="daily"]').check();
@@ -178,6 +178,49 @@ test("the Routines tab draws the workspace's routines, edits one, and runs it no
     await expect(tab.locator(".run-list li")).toHaveCount(2);
     await expect.poll(agentDid).toContain("set model to opus");
     await expect.poll(agentDid).toContain("set effort to high");
+  });
+
+  await test.step("a renamed profile keeps its routine: the card names it by its new name, and Run now starts on it", async () => {
+    const dialog = await openProfiles(page);
+    await dialog.locator(".profile-list li", { hasText: "nightly" }).click();
+    await openProfileTab(dialog, "Launch");
+    await dialog.getByLabel("Profile name").fill("nightly runs");
+    await dialog.getByRole("button", { name: "Save", exact: true }).click();
+    await dialog.getByRole("button", { name: "Close" }).click();
+    const tab = tabView(page);
+    await expect(tab.locator(".routine-list li .chip")).toHaveText("nightly runs · Opus · High");
+    await expect(tab.locator(".when-words.failed")).toHaveCount(0);
+    await tab.getByRole("button", { name: "Run now" }).click();
+    await expect(tab.locator(".run-list li")).toHaveCount(3);
+    await expect.poll(() => agentSaw().split("Read the newest e2e results.").length - 1).toBe(3);
+    await expect(tab.locator(".run-problem")).toHaveCount(0);
+  });
+
+  await test.step("a deleted profile is flagged on its routine, whose run fails saying why, and the editor won't save it until another is chosen", async () => {
+    const dialog = await createProfile(page, "spare", "", "", "opencode");
+    await dialog.locator(".profile-list li", { hasText: "nightly runs" }).click();
+    await dialog.getByRole("button", { name: "Delete profile" }).click();
+    await dialog.getByRole("button", { name: "Confirm: Delete profile" }).click();
+    await dialog.getByRole("button", { name: "Close" }).click();
+    const tab = tabView(page);
+    const gone = "the profile it runs on, nightly runs, is gone; edit it to choose another";
+    await expect(tab.locator(".when-words.failed")).toContainText(gone);
+
+    await tab.getByRole("button", { name: "Run now" }).click();
+    await expect(tab.locator(".run-list li")).toHaveCount(4);
+    await expect(tab.locator(".run-list li").first().locator(".status")).toHaveText("failed");
+    await expect(tab.locator(".run-list li").first().locator(".run-problem")).toHaveText(gone);
+
+    await tab.getByRole("button", { name: "Edit" }).click();
+    await expect(tab.locator('[name="profile"] option:checked'), "not the first profile, as if it were chosen").toHaveText("nightly runs is gone: choose another");
+    await tab.getByRole("button", { name: "Save routine" }).click();
+    await expect(tab.locator(".notice.failed")).toHaveText("Choose a profile for it to run on.");
+    await tab.locator('[name="profile"]').selectOption({ label: "spare · opencode" });
+    await tab.getByRole("button", { name: "Save routine" }).click();
+    await expect(tab.locator(".editor")).toHaveCount(0);
+    await expect(tab.locator(".notice"), "the refusal goes once the routine saves").toHaveText("");
+    await expect(tab.locator(".routine-list li .chip")).toHaveText("spare");
+    await expect(tab.locator(".when-words.failed")).toHaveCount(0);
   });
 
   await test.step("a bad cron line is said where the routine is listed", async () => {

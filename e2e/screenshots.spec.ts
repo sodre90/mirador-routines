@@ -73,7 +73,7 @@ const tabView = (page: Page) => page.frameLocator(".canvas-panel:visible .canvas
 
 async function fillEditor(tab: FrameLocator, { name, profile, model, effort, what, outcome, when }: Routine) {
   await tab.locator('[name="name"]').fill(name);
-  await tab.locator('[name="profile"]').selectOption(profile);
+  await tab.locator('[name="profile"]').selectOption({ label: `${profile} · opencode` });
   await expect(tab.locator('[name="model"] option', { hasText: "Opus" }), "the agent has said what it offers").toHaveCount(1);
   if (model) await tab.locator('[name="model"]').selectOption(model);
   if (effort) await tab.locator('[name="effort"]').selectOption(effort);

@@ -17,8 +17,8 @@ export interface Offered {
 export interface Routine {
   id: string;
   name: string;
-  /** The profile the run's conversation starts on, by name. */
-  profile: string;
+  /** The profile the run's conversation starts on: its id, which a rename keeps, and its name, to tell it by once it's deleted. */
+  profile: { id: string; name: string };
   /** The model the run's conversation starts on; none, or null, for the profile's own. */
   model?: Offered | null;
   /** The effort the run's conversation starts on; none, or null, for the profile's own. */
@@ -43,6 +43,8 @@ export interface Run {
   status: "running" | "finished" | "failed" | "stopped";
   /** When its conversation's turn ended, or it couldn't start; null while it works, and for a run Mirador's restart cut short. */
   endedAt: number | null;
+  /** Why it couldn't start, on a run that failed to. */
+  problem?: string;
 }
 
 /** A routine as the tab sees it: with what its schedule says, when it next runs, and its slots in the coming week. */
@@ -64,7 +66,32 @@ const RUNS_KEPT = 100;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const UPCOMING_SHOWN = 200;
 
-const routinesIn = (context: WorkspaceTabContext) => (context.storage.get("routines") ?? []) as Routine[];
+/** A routine as saved before 0.4.0, naming its profile. */
+type NamingItsProfile = Omit<Routine, "profile"> & { profile: string };
+
+/**
+ * The routines, each kept with its profile's name as it is now, so one whose profile is later deleted names it as the user
+ * last knew it. One saved before 0.4.0 names its profile, and takes the id of the profile with that name.
+ */
+function routinesIn(context: WorkspaceTabContext): Routine[] {
+  const saved = (context.storage.get("routines") ?? []) as (Routine | NamingItsProfile)[];
+  const routines = saved.map((routine) => ({ ...routine, profile: profileNow(context, routine.profile) }));
+  if (routines.some((routine, index) => JSON.stringify(routine.profile) !== JSON.stringify(saved[index]!.profile))) saveRoutines(context, routines);
+  return routines;
+}
+
+function profileNow(context: WorkspaceTabContext, kept: Routine["profile"] | string): Routine["profile"] {
+  const named = typeof kept === "string";
+  const profile = context.profiles().find((each) => (named ? each.name.toLowerCase() === kept.trim().toLowerCase() : each.id === kept.id));
+  if (profile) return { id: profile.id, name: profile.name };
+  return named ? { id: "", name: kept } : kept;
+}
+
+/** The profile a routine runs on, as Mirador has it now; none once it's deleted. */
+const profileOf = (context: WorkspaceTabContext, routine: Routine) => context.profiles().find(({ id }) => id === routine.profile.id);
+
+const profileGone = (routine: Routine) => `the profile it runs on${routine.profile.name ? `, ${routine.profile.name},` : ""} is gone; edit it to choose another`;
+
 const runsIn = (context: WorkspaceTabContext) => (context.storage.get("runs") ?? []) as Run[];
 const firedIn = (context: WorkspaceTabContext) => (context.storage.get("fired") ?? {}) as Record<string, number>;
 /** Each routine's slot that won't run, kept apart from the routine so the editor's Save leaves it be. */
@@ -167,9 +194,14 @@ const contexts = () => (opened === null ? [] : opened.workspaces().map(({ id }) 
 /** Starts one routine's conversation in its workspace, and returns the run to keep, saying why it couldn't start. */
 async function startRun(context: WorkspaceTabContext, routine: Routine, slot: Date): Promise<Run> {
   const begun = { routineId: routine.id, routineName: routine.name, slot: slot.getTime(), startedAt: Date.now(), title: runTitle(routine.name, slot) };
+  const failed = (problem: string): Run => {
+    console.error(`the routine "${routine.name}" couldn't start: ${problem}`);
+    return { ...begun, conversationId: "", status: "failed", endedAt: Date.now(), problem };
+  };
+  if (!profileOf(context, routine)) return failed(profileGone(routine));
   try {
     const started: StartedConversation = await context.startConversation({
-      profile: routine.profile,
+      profileId: routine.profile.id,
       prompt: promptFor(routine),
       title: begun.title,
       model: routine.model?.id,
@@ -177,9 +209,7 @@ async function startRun(context: WorkspaceTabContext, routine: Routine, slot: Da
     });
     return { ...begun, conversationId: started.id, status: "running", endedAt: null };
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    console.error(`the routine "${routine.name}" couldn't start: ${why}`);
-    return { ...begun, conversationId: "", status: "failed", endedAt: Date.now() };
+    return failed(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -237,17 +267,23 @@ export function watchWorkspaces(context: PluginBackgroundContext) {
   }
 }
 
+/** A routine as the tab shows it, with a problem once its profile is gone. */
+function shownIn(context: WorkspaceTabContext, routine: Routine): ShownRoutine {
+  const shown = showRoutine(routine, skipsIn(context)[routine.id] ?? null);
+  return profileOf(context, routine) ? shown : { ...shown, problem: shown.problem ?? profileGone(routine) };
+}
+
 const tabState = (context: WorkspaceTabContext) => ({
   workspace: context.workspace.name,
-  routines: routinesIn(context).map((routine) => showRoutine(routine, skipsIn(context)[routine.id] ?? null)),
+  routines: routinesIn(context).map((routine) => shownIn(context, routine)),
   runs: runsIn(context).slice().reverse(),
-  profiles: context.profiles().map(({ name, agent, model, effort }) => ({ name, agent, model: model?.name ?? null, effort })),
+  profiles: context.profiles().map(({ id, name, agent, model, effort }) => ({ id, name, agent, model: model?.name ?? null, effort })),
 });
 
 const blankRoutine = (): Routine => ({
   id: crypto.randomUUID(),
   name: "",
-  profile: "",
+  profile: { id: "", name: "" },
   model: null,
   effort: null,
   what: "",
@@ -265,7 +301,7 @@ type TabAction =
   | { kind: "runNow"; id: string }
   | { kind: "skipNext"; id: string }
   | { kind: "dontSkip"; id: string }
-  | { kind: "choices"; profile: string };
+  | { kind: "choices"; profileId: string };
 
 /** The routine as the editor sent it back, without what the tab showed beside it. */
 const ownFields = ({ id, name, profile, model, effort, what, outcome, schedule, on }: Routine): Routine => ({ id, name, profile, model, effort, what, outcome, schedule, on });
@@ -288,7 +324,9 @@ const tabAction = {
       case "describe":
         return showRoutine({ ...blankRoutine(), schedule: asked.schedule });
       case "save": {
-        const routine = ownFields(asked.routine);
+        const profile = profileOf(context, asked.routine);
+        if (!profile) throw new Error("Choose a profile for it to run on.");
+        const routine = ownFields({ ...asked.routine, profile: { id: profile.id, name: profile.name } });
         const routines = routinesIn(context);
         const before = routines.find((each) => each.id === routine.id);
         const rescheduled = before !== undefined && !sameSchedule(before.schedule, routine.schedule);
@@ -296,7 +334,7 @@ const tabAction = {
         if (routine.on && (rescheduled || before?.on === false)) startFromNow(context, routine);
         saveRoutines(context, before ? routines.map((each) => (each.id === routine.id ? routine : each)) : [routine, ...routines]);
         context.changed();
-        return showRoutine(routine, skipsIn(context)[routine.id] ?? null);
+        return shownIn(context, routine);
       }
       case "delete":
         saveRoutines(context, routinesIn(context).filter((each) => each.id !== asked.id));
@@ -331,7 +369,7 @@ const tabAction = {
         });
       }
       case "choices":
-        return context.profileChoices(asked.profile);
+        return context.profileChoices(asked.profileId);
     }
   },
 };
